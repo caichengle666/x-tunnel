@@ -1,40 +1,29 @@
-# =============================================================================
-# x-tunnel ·şÎñ¶Ë Docker ¾µÏñ
-# ±àÒë£ºgo build (Linux)£¬TUN Ä£Ê½µÄ tun_*.go »áÒò //go:build windows ±»×Ô¶¯ÅÅ³ı
+ï»¿# =============================================================================
+# x-tunnel Server Docker Image
+# Build: Linux binary (tun_*.go excluded via //go:build windows)
 # =============================================================================
 
-# -------------------------------
-# Stage 1: Build
-# -------------------------------
-FROM --platform=\ golang:1.25-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache ca-certificates git
 
 WORKDIR /build
 
-# ·ÖÀëÒÀÀµ²ã£¬ĞŞ¸Ä go.mod/go.sum ºóÄÜ¸´ÓÃ»º´æ
 COPY go.mod go.sum ./
 RUN go mod download
 
-# ¸´ÖÆÈ«²¿ .go ÎÄ¼ş£»Linux ±àÒëÊ± tun_*.go ÓĞ //go:build windows£¬×Ô¶¯²»²ÎÓë±àÒë
 COPY *.go ./
 
-# °şÀëµ÷ÊÔĞÅÏ¢£¬Ñ¹Ëõ¶ş½øÖÆÌå»ı
-RUN CGO_ENABLED=0 go build -ldflags=\"-s -w\" -o x-tunnel .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o x-tunnel .
 
-# -------------------------------
-# Stage 2: Runtime
-# -------------------------------
 FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
 
-# ÒÔ·Ç root ÓÃ»§ÔËĞĞ£¬ÔöÇ¿ÈİÆ÷°²È«ĞÔ
 RUN addgroup -S xtunnel && adduser -S xtunnel -G xtunnel
 USER xtunnel
 
 WORKDIR /app
 COPY --from=builder /build/x-tunnel /app/x-tunnel
 
-# x-tunnel ËùÓĞÈÕÖ¾Êä³öµ½ stdout/stderr£¬docker logs / kubectl logs ×Ô¶¯ÊÕ¼¯
-ENTRYPOINT [\"/app/x-tunnel\"]
+ENTRYPOINT ["/app/x-tunnel"]
