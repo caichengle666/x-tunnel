@@ -1,12 +1,14 @@
-name: Build & Release
+锘縩ame: Build & Release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  # 跨平台编译 (tun_*.go 因 //go:build windows 在非 Win 自动排除)
   build:
     strategy:
       fail-fast: false
@@ -40,7 +42,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Windows TUN 完整编译 (gvisor + wintun + WIndows-only TUN 代码)
   build-windows-tun:
     needs: build
     runs-on: windows-latest
