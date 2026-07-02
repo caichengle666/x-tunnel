@@ -1,0 +1,94 @@
+# =============================================================================
+# x-tunnel 服务端 docker-compose 示例
+# 用法：
+#   1. cp .env.example .env  → 填入 TOKEN 和证书路径
+#   2. docker compose up -d
+# =============================================================================
+
+services:
+  # ----------------------
+  # 方案 A：WS 明文模式（开发/内网）
+  # ----------------------
+  tunnel-ws:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xtunnel-ws
+    restart: always
+    ports:
+      - \"8080:8080\"
+    environment:
+      - TOKEN=\
+    command:
+      - -l
+      - ws://0.0.0.0:8080/tunnel
+      - -token
+      - \
+      - -cidr
+      - \
+    healthcheck:
+      test: [\"CMD\", \"nc\", \"-z\", \"127.0.0.1\", \"8080\"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ----------------------
+  # 方案 B：WSS + 自签证书（生产推荐）
+  # ----------------------
+  tunnel-wss:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xtunnel-wss
+    restart: always
+    ports:
+      - \"443:443\"
+    environment:
+      - TOKEN=\
+    volumes:
+      # 如果有 TLS 证书，挂载到这里；没有则自动生成自签证书
+      - \:/certs:ro
+    command:
+      - -l
+      - wss://0.0.0.0:443/tunnel
+      - -token
+      - \
+      - -cidr
+      - \
+      # 自定义证书路径（需要时取消注释）
+      # - -cert
+      # - /certs/server.crt
+      # - -key
+      # - /certs/server.key
+    healthcheck:
+      test: [\"CMD\", \"nc\", \"-z\", \"127.0.0.1\", \"443\"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ----------------------
+  # 方案 C：WSS + SOCKS5 前置代理（服务端流量通过代理发出）
+  # ----------------------
+  tunnel-wss-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xtunnel-wss-proxy
+    restart: always
+    ports:
+      - \"8443:8443\"
+    environment:
+      - TOKEN=\
+      - SOCKS5_PROXY=\
+    command:
+      - -l
+      - wss://0.0.0.0:8443/tunnel
+      - -token
+      - \
+      - -cidr
+      - \
+      # 服务端通过 SOCKS5 代理转发流量（需要时取消注释）
+      # - -f
+      # - \

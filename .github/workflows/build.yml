@@ -1,0 +1,61 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # 跨平台编译 (tun_*.go 因 //go:build windows 在非 Win 自动排除)
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go mod download
+      - name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          EXT=$([ "${{ matrix.goos }}" = "windows" ] && echo ".exe" || echo "")
+          NAME="x-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}$EXT"
+          go build -ldflags "-s -w" -o "$NAME" .
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: x-tunnel-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Windows TUN 完整编译 (gvisor + wintun + WIndows-only TUN 代码)
+  build-windows-tun:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go mod download
+      - name: Build windows-amd64 (TUN enabled)
+        run: go build -ldflags "-s -w" -o x-tunnel-windows-amd64.exe .
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: x-tunnel-windows-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
