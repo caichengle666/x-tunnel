@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bufio"
@@ -117,6 +117,9 @@ func init() {
 
 func main() {
 	flag.Parse()
+
+	// 启动 Web GUI（如果 -web 参数已设置）
+	startWebGUI()
 
 	if listenAddr == "" && !tunMode {
 		flag.Usage()
