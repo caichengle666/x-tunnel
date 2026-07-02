@@ -1,12 +1,28 @@
-# 排除构建缓存和临时文件
+# Binary output
 *.exe
-*.zip
+*.dll
+*.so
+*.dylib
+
+# Documentation
 *.md
+
+# VCS
 .git
 .gitignore
+
+# Secrets
 .env
 .env.*
 *.log
 
-# Windows TUN 代码在 Linux 编译时自动排除，但仍排除整个目录避免歧义
-tun_*.go
+# IDE
+.idea/
+.vscode/
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+
+# Tests
+*_test.go

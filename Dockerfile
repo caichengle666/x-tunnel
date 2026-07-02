@@ -5,16 +5,18 @@
 
 FROM golang:1.26-alpine AS builder
 
+ENV GOPROXY=https://goproxy.cn,direct
+
 RUN apk add --no-cache ca-certificates git
 
 WORKDIR /build
 
 COPY go.mod go.sum ./
-RUN go mod download
-
 COPY *.go ./
 
-RUN CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct go build -ldflags="-s -w" -o x-tunnel .
+RUN go mod download
+
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o x-tunnel .
 
 FROM alpine:3.21
 
