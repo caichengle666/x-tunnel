@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bufio"
@@ -32,25 +32,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/xtaci/smux"
 )
-
-// physIfaceIndex 是物理网卡的接口索引，用于 IP_UNICAST_IF 绑定
-// x-tunnel 自身的 WebSocket 连接通过此索引绕过 TUN
-var physIfaceIndex int = -1
-
-// bindSocketToPhysNIC 将 socket 绑定到物理网卡，使其绕过 TUN 路由
-func bindSocketToPhysNIC(network string, c syscall.RawConn) error {
-    if physIfaceIndex <= 0 {
-        return nil
-    }
-    return c.Control(func(fd uintptr) {
-        switch network {
-        case "tcp4", "udp4":
-            syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 31 /*IP_UNICAST_IF*/, physIfaceIndex)
-        case "tcp6", "udp6":
-            syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IPV6, 31 /*IPV6_UNICAST_IF*/, physIfaceIndex)
-        }
-    })
-}
 
 type GlobalConfig struct {
 	DialTimeout        time.Duration
@@ -255,83 +236,7 @@ func main() {
 	echPool = NewECHPool(forwardAddr, connectionNum, targetIPs, clientID)
 	echPool.Start()
 
-	// ================= TUN 模式（仅在 Windows 启用） =================
-	if tunMode {
-		// 等待至少一条通道就绪后再启动 TUN
-		// 避免 TUN 路由建立后所有流量被劫持但 smux 通道又不可用
-		log.Printf("[TUN] 等待 smux 通道就绪（最长 60 秒）...")
-		if echPool.WaitForChannelReady(60 * time.Second) {
-			log.Printf("[TUN] 通道已就绪，启动 TUN 模式")
-		} else {
-			log.Printf("[TUN] 通道就绪超时（60s），仍启动 TUN（后续流量将回退直连）")
-		}
-
-		// 探测物理网卡接口索引，用于 IP_UNICAST_IF 绑定绕过 TUN
-		physIfaceIndex = detectPhysIfaceIndex()
-		if physIfaceIndex > 0 {
-			log.Printf("[客户端] 物理网卡接口索引: %d (自身连接将绕过 TUN)", physIfaceIndex)
-		} else {
-			log.Printf("[客户端] 探测物理网卡索引失败")
-		}
-
-
-
-		// Load geo data from files specified by -geoip / -geosite flags
-		loadGeoIP()
-		loadGeoSite()
-
-		if forwardAddr == "" {
-			log.Fatalf("[TUN] TUN 模式必须指定服务地址 (-f ws:// 或 wss://)")
-		}
-
-		// Build TUN config
-		routes := []string{"0.0.0.0/0"}
-		var dnsServers []string
-		for _, d := range strings.Split(tunDNS, ",") {
-			d = strings.TrimSpace(d)
-			if d != "" {
-				dnsServers = append(dnsServers, d)
-			}
-		}
-		gateways := []string{tunAddress}
-
-		// Default to IPv4-only unless the user explicitly enables IPv6 with -ips.
-		enableIPv6 := ipStrategy != IPStrategyIPv4Only
-		if enableIPv6 {
-			gateways = append(gateways, "fdfe:dcba:9876::1/126")
-			routes = append(routes, "::/0")
-		}
-
-		tunCfg := &TunConfig{
-			Name:                   tunName,
-			MTU:                    tunMTU,
-			Gateway:                gateways,
-			DNS:                    dnsServers,
-			AutoSystemRoutingTable: routes,
-		}
-		log.Printf("[TUN] 配置: device=%s, mtu=%d, addr=%v, routes=%v",
-			tunCfg.Name, tunCfg.MTU, tunCfg.Gateway, tunCfg.AutoSystemRoutingTable)
-
-		// 在启动 TUN 之前，先启动 -l 指定的本地监听（socks5/http）
-		// 因为 StartTun 内部 select{} 会永久阻塞，之后的代码不会执行
-		for _, listenerRule := range listeners {
-			rule := strings.TrimSpace(listenerRule)
-			if rule == "" {
-				continue
-			}
-			if strings.HasPrefix(rule, "socks5://") {
-				go runSOCKS5Listener(rule)
-			} else if strings.HasPrefix(rule, "http://") {
-				go runHTTPListener(rule)
-			} else if strings.HasPrefix(rule, "tcp://") {
-				go runTCPListener(rule)
-			}
-		}
-
-		if err := StartTun(tunCfg); err != nil {
-			log.Fatalf("[TUN] TUN 启动失败: %v", err)
-		}
-	}
+	runTUNModeIfNeeded()
 
 	// 非 TUN 模式的本地监听（TUN 模式的已在上面启动）
 	if !tunMode {
@@ -2133,36 +2038,36 @@ func handleLocalTCP(c net.Conn, target string) {
 // dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑
 // detectPhysIfaceIndex 选择一个可用的非 TUN 物理网卡索引（跳过 loopback 和虚拟网卡）
 func detectPhysIfaceIndex() int {
-    ifaces, err := net.Interfaces()
-    if err != nil {
-        return -1
-    }
-    for _, iface := range ifaces {
-        // 跳过未启用、loopback、虚拟网卡
-        if iface.Flags&net.FlagUp == 0 {
-            continue
-        }
-        if iface.Flags&net.FlagLoopback != 0 {
-            continue
-        }
-        name := strings.ToLower(iface.Name)
-        if strings.Contains(name, "xtun") || strings.Contains(name, "wintun") ||
-           strings.Contains(name, "tap") || strings.Contains(name, "vEthernet") {
-            continue
-        }
-        // 需要有 IP 地址
-        addrs, err := iface.Addrs()
-        if err != nil || len(addrs) == 0 {
-            continue
-        }
-        // 优先有 IPv4 的接口
-        for _, a := range addrs {
-            if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
-                return iface.Index
-            }
-        }
-    }
-    return -1
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return -1
+	}
+	for _, iface := range ifaces {
+		// 跳过未启用、loopback、虚拟网卡
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(iface.Name)
+		if strings.Contains(name, "xtun") || strings.Contains(name, "wintun") ||
+			strings.Contains(name, "tap") || strings.Contains(name, "vEthernet") {
+			continue
+		}
+		// 需要有 IP 地址
+		addrs, err := iface.Addrs()
+		if err != nil || len(addrs) == 0 {
+			continue
+		}
+		// 优先有 IPv4 的接口
+		for _, a := range addrs {
+			if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
+				return iface.Index
+			}
+		}
+	}
+	return -1
 }
 
 func (p *ECHPool) dialWebSocketWithECH(addr string, retries int, ip string, clientID string, channelID int) (*websocket.Conn, error) {
@@ -2220,11 +2125,9 @@ func (p *ECHPool) dialWebSocketWithECH(addr string, retries int, ip string, clie
 			var d net.Dialer
 			d.Timeout = cfg.DialTimeout
 
-			// 绑定物理网卡接口索引（绕过 TUN）
-			if physIfaceIndex > 0 {
-				d.Control = func(_, _ string, rawC syscall.RawConn) error {
-					return bindSocketToPhysNIC(network, rawC)
-				}
+			// 绑定物理网卡接口（非 Windows 上 bindSocketToPhysNIC 为空操作）
+			d.Control = func(_, _ string, rawC syscall.RawConn) error {
+				return bindSocketToPhysNIC(network, rawC)
 			}
 
 			return d.DialContext(context.Background(), network, address)
@@ -2580,7 +2483,7 @@ func (a *UDPAssociation) send(target string, data []byte) {
 		a.receiving = false
 		a.mu.Unlock()
 		a.send(target, data)
-	return
+		return
 	}
 	if stream == nil {
 		a.Close()
