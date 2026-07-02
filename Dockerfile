@@ -1,9 +1,9 @@
-﻿# =============================================================================
+# =============================================================================
 # x-tunnel Server Docker Image
 # Build: Linux binary (tun_*.go excluded via //go:build windows)
 # =============================================================================
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache ca-certificates git
 
@@ -14,7 +14,7 @@ RUN go mod download
 
 COPY *.go ./
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o x-tunnel .
+RUN CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct go build -ldflags="-s -w" -o x-tunnel .
 
 FROM alpine:3.21
 
