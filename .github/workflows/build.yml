@@ -2,6 +2,7 @@ name: Build & Release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch:
 
@@ -98,3 +99,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
