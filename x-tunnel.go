@@ -1617,6 +1617,8 @@ type ECHPool struct {
 	selectCounter uint64
 	readyCh       chan struct{}
 	readyOnce     sync.Once
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
@@ -1633,10 +1635,24 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 		channelRTT:    make([]int64, total),
 		readyCh:       make(chan struct{}, 1),
 	}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 	return p
 }
 
 // WaitForChannelReady 阻塞直到至少一条 smux 通道就绪或超时。
+func (p *ECHPool) Stop() {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.wsConnsMu.Lock()
+	for _, sess := range p.smuxConns {
+		if sess != nil {
+			sess.Close()
+		}
+	}
+	p.wsConnsMu.Unlock()
+}
+
 func (p *ECHPool) WaitForChannelReady(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -1669,6 +1685,7 @@ func (p *ECHPool) Start() {
 }
 
 func (p *ECHPool) dialAndServe(idx int, ip string) {
+	ctx := p.ctx
 	chID := idx + 1
 	ipLabel := ip
 	if strings.TrimSpace(ipLabel) == "" {
@@ -1729,7 +1746,11 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 			log.Printf("[客户端] 通道 %d 断开原因: %v", chID, probeErr)
 		}
 		log.Printf("[客户端] 通道 %d 断开，重连中...", chID)
-		time.Sleep(cfg.ReconnectDelay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(cfg.ReconnectDelay):
+		}
 	}
 }
 

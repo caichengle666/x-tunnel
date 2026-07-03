@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"container/ring"
@@ -169,11 +169,16 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	displayToken := ""
+	if len(token) > 4 {
+		displayToken = "***" + token[len(token)-4:]
+	} else if token != "" {
+		displayToken = "***"
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"listen":   listenAddr,
 		"forward":  forwardAddr,
-		"token":    token,
-		"conn_num": connectionNum,
+		"token":    displayToken,
 		"insecure": insecure,
 		"ips":      ips,
 	})
@@ -196,7 +201,7 @@ const dashboardHTML = `<!DOCTYPE html>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
 
-<div class="container mx-auto p-6">
+<div class="max-w-7xl mx-auto p-6">
     <h1 class="text-3xl font-bold mb-8 text-blue-400">x-tunnel 管理面板</h1>
 
     <!-- Status Cards -->
@@ -430,9 +435,8 @@ setInterval(fetchLogs, 2000);
 type updateRequest struct {
     Token    string `json:"token,omitempty"`
     Forward  string `json:"forward,omitempty"`
-    Listen   string `json:"listen,omitempty"`
     ConnNum  int    `json:"conn_num,omitempty"`
-    Insecure bool   `json:"insecure,omitempty"`
+    Insecure *bool   `json:"insecure,omitempty"`
     IPs      string `json:"ips,omitempty"`
 }
 
@@ -475,9 +479,9 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
         changes = append(changes, "conn_num")
         reconnectNeeded = true
     }
-    if req.Insecure != insecure {
-        log.Printf("[热加载] insecure: %t -> %t", insecure, req.Insecure)
-        insecure = req.Insecure
+    if req.Insecure != nil && *req.Insecure != insecure {
+        log.Printf("[热加载] insecure: %t -> %t", insecure, *req.Insecure)
+        insecure = *req.Insecure
         changes = append(changes, "insecure")
         reconnectNeeded = true
     }
@@ -517,9 +521,9 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 
         time.Sleep(1 * time.Second)
 
-        if forwardAddr != "" {
-            oldPool := echPool
-            _ = oldPool
+        if forwardAddr != "" && echPool != nil {
+            echPool.Stop()
+            echPool = nil
             var newIPs []string
             if ipAddr != "" {
                 for _, p := range strings.Split(ipAddr, ",") {
@@ -541,9 +545,3 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
     })
 }
 
-func safeSuffix(s string, n int) string {
-    if len(s) <= n {
-        return s
-    }
-    return s[len(s)-n:]
-}
