@@ -7,8 +7,11 @@ import (
 	"log"
 	"net/http"
 	"flag"
+	"io"
 	"sync"
 	"sync/atomic"
+	"strings"
+	"time"
 
 )
 
@@ -16,6 +19,9 @@ var (
 	webListen string
 	logBuffer *ring.Ring
 	logMu     sync.RWMutex
+
+	reconnectMu     sync.Mutex
+	reconnectNeeded bool
 )
 
 const logRingSize = 500
@@ -51,6 +57,8 @@ func startWebGUI() {
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/logs", handleLogs)
 	mux.HandleFunc("/api/config", handleConfig)
+	mux.HandleFunc("/api/update", handleUpdateConfig)
+	mux.HandleFunc("/api/restart", handleRestartClient)
 
 	go func() {
 		log.Printf("[Web GUI] 监听 %s", webListen)
@@ -222,6 +230,48 @@ const dashboardHTML = `<!DOCTYPE html>
             <div><span class="text-gray-400">Insecure:</span> <span id="cfg-insecure"></span></div>
             <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips"></span></div>
         </div>
+        <div class="mt-4">
+            <button onclick="showEditPanel()" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">修改配置</button>
+            <button onclick="restartClient()" class="ml-2 px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700">重启客户端</button>
+        </div>
+    </div>
+
+    <!-- 配置编辑面板 -->
+    <div id="edit-panel" class="bg-gray-800 rounded-lg p-6 mb-8 hidden">
+        <h2 class="text-xl font-semibold mb-4">修改配置</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="text-gray-400 text-sm">服务器地址 (forward)</label>
+                <input id="edit-forward" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="ws://...">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">Token</label>
+                <input id="edit-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="password">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">连接数 (conn_num)</label>
+                <input id="edit-conn" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="number" min="1" max="20">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">IP 策略</label>
+                <select id="edit-ips" class="w-full bg-gray-700 text-white rounded p-2 mt-1">
+                    <option value="">默认</option>
+                    <option value="4">仅 IPv4</option>
+                    <option value="6">仅 IPv6</option>
+                    <option value="4,6">IPv4 优先</option>
+                    <option value="6,4">IPv6 优先</option>
+                </select>
+            </div>
+            <div class="flex items-center space-x-2">
+                <input id="edit-insecure" type="checkbox" class="w-4 h-4">
+                <label class="text-gray-400 text-sm">跳过证书校验 (insecure)</label>
+            </div>
+        </div>
+        <div class="mt-4 flex space-x-3">
+            <button onclick="saveConfig()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">保存</button>
+            <button onclick="cancelEdit()" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-500">取消</button>
+        </div>
+        <div id="edit-msg" class="mt-2 text-sm hidden"></div>
     </div>
 
     <!-- Channels -->
@@ -313,3 +363,127 @@ setInterval(fetchLogs, 2000);
 </script>
 </body>
 </html>`
+
+
+// ======================== 热加载配置 ========================
+
+type updateRequest struct {
+    Token    string `json:"token,omitempty"`
+    Forward  string `json:"forward,omitempty"`
+    Listen   string `json:"listen,omitempty"`
+    ConnNum  int    `json:"conn_num,omitempty"`
+    Insecure bool   `json:"insecure,omitempty"`
+    IPs      string `json:"ips,omitempty"`
+}
+
+func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" {
+        http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+        return
+    }
+    body, err := io.ReadAll(r.Body)
+    if err != nil {
+        http.Error(w, "读取失败", http.StatusBadRequest)
+        return
+    }
+    var req updateRequest
+    if err := json.Unmarshal(body, &req); err != nil {
+        http.Error(w, "JSON 解析失败: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    reconnectMu.Lock()
+    defer reconnectMu.Unlock()
+
+    changes := []string{}
+
+    if req.Token != "" && req.Token != token {
+        log.Printf("[热加载] token 已更新")
+        token = req.Token
+        changes = append(changes, "token")
+        reconnectNeeded = true
+    }
+    if req.Forward != "" && req.Forward != forwardAddr {
+        log.Printf("[热加载] forward: %s -> %s", forwardAddr, req.Forward)
+        forwardAddr = req.Forward
+        changes = append(changes, "forward")
+        reconnectNeeded = true
+    }
+    if req.ConnNum > 0 && req.ConnNum != connectionNum {
+        log.Printf("[热加载] conn_num: %d -> %d", connectionNum, req.ConnNum)
+        connectionNum = req.ConnNum
+        changes = append(changes, "conn_num")
+        reconnectNeeded = true
+    }
+    if req.Insecure != insecure {
+        log.Printf("[热加载] insecure: %t -> %t", insecure, req.Insecure)
+        insecure = req.Insecure
+        changes = append(changes, "insecure")
+        reconnectNeeded = true
+    }
+    if req.IPs != "" && req.IPs != ips {
+        log.Printf("[热加载] ips: %s -> %s", ips, req.IPs)
+        ips = req.IPs
+        ipStrategy = parseIPStrategy(ips)
+        changes = append(changes, "ips")
+        reconnectNeeded = true
+    }
+
+    msg := "配置已更新"
+    if reconnectNeeded {
+        msg += "，需要点击重启按钮生效"
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "success": true,
+        "changes": changes,
+        "restart": reconnectNeeded,
+        "message": msg,
+    })
+}
+
+func handleRestartClient(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" {
+        http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+        return
+    }
+
+    go func() {
+        log.Printf("[热加载] 正在重启客户端...")
+        reconnectMu.Lock()
+        reconnectNeeded = false
+        reconnectMu.Unlock()
+
+        time.Sleep(1 * time.Second)
+
+        if forwardAddr != "" {
+            oldPool := echPool
+            _ = oldPool
+            var newIPs []string
+            if ipAddr != "" {
+                for _, p := range strings.Split(ipAddr, ",") {
+                    if trimmed := strings.TrimSpace(p); trimmed != "" {
+                        newIPs = append(newIPs, trimmed)
+                    }
+                }
+            }
+            echPool = NewECHPool(forwardAddr, connectionNum, newIPs, clientID)
+            echPool.Start()
+            log.Printf("[热加载] 客户端重启完成，已连接 %s", forwardAddr)
+        }
+    }()
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "success": true,
+        "message": "客户端正在重启...",
+    })
+}
+
+func safeSuffix(s string, n int) string {
+    if len(s) <= n {
+        return s
+    }
+    return s[len(s)-n:]
+}
