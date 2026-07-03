@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bufio"
@@ -1276,6 +1276,22 @@ func runWebSocketServer(addr string) {
 		log.Printf("[服务端] 客户端通道 %d 连接, 客户端ID: %s, IP: %s", ch.id, cid, clientIP)
 		go handleWebSocketChannel(ch)
 	})
+	// 根路径返回状态页
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `<html>
+<head><title>x-tunnel</title></head>
+<body style="font-family:monospace;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;height:100vh;margin:0">
+<div style="text-align:center">
+<h1 style="color:#e94560">x-tunnel 运行中</h1>
+<p>WebSocket endpoint: <code>%s</code></p>
+<p>Token: %s</p>
+<p>Status: <span style="color:#0f0">OK</span></p>
+</div>
+</body></html>`, path, map[bool]string{true: "已设置", false: "未设置"}[token != ""])
+	})
+
 
 	if u.Scheme == "wss" {
 		server := &http.Server{Addr: u.Host}

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"container/ring"
@@ -60,6 +60,23 @@ func startWebGUI() {
 	}()
 }
 
+
+func countActiveClients() int {
+	count := 0
+	serverSessions.Range(func(_, v any) bool {
+		if cs, ok := v.(*ClientSession); ok && cs != nil {
+			cs.mu.RLock()
+			for _, ch := range cs.channels {
+				if ch != nil && ch.conn != nil {
+					count++
+				}
+			}
+			cs.mu.RUnlock()
+		}
+		return true
+	})
+	return count
+}
 func statusJSON() map[string]interface{} {
 	result := map[string]interface{}{
 		"uptime":     "running",
@@ -68,9 +85,11 @@ func statusJSON() map[string]interface{} {
 
 	// Server mode (no echPool)
 	if echPool == nil {
-		result["mode"]    = "server"
-		result["listen"]  = listenAddr
-		result["tunnel"]  = "服务端模式"
+		result["mode"]     = "server"
+		result["listen"]   = listenAddr
+		result["tunnel"]   = "服务端模式"
+		result["healthy"]  = true
+		result["clients"]  = countActiveClients()
 		return result
 	}
 
@@ -175,7 +194,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <!-- Status Cards -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <div class="bg-gray-800 rounded-lg p-4">
-            <div class="text-gray-400 text-sm">活动通道</div>
+            <div class="text-gray-400 text-sm" id="label-active">活动通道</div>
             <div class="text-2xl font-bold" id="active-channels">--</div>
         </div>
         <div class="bg-gray-800 rounded-lg p-4">
@@ -245,8 +264,16 @@ function fetchStatus() {
             document.getElementById('channels-body').innerHTML = html;
         }
         const hs = document.getElementById('health-status');
-        if (data.healthy) { hs.textContent = '✓ 健康'; hs.className = 'text-2xl font-bold text-green-400'; }
-        else { hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400'; }
+        if (data.mode === 'server') {
+            document.getElementById('active-channels').textContent = data.clients;
+            hs.textContent = '✓ 正常'; hs.className = 'text-2xl font-bold text-green-400';
+        } else if (data.healthy) {
+            document.getElementById('active-channels').textContent = data.channels ? data.channels.length : 0;
+            hs.textContent = '✓ 健康'; hs.className = 'text-2xl font-bold text-green-400';
+        } else {
+            document.getElementById('active-channels').textContent = '0';
+            hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400';
+        }
     }).catch(() => {});
 }
 
@@ -254,6 +281,11 @@ function fetchConfig() {
     fetch('/api/config').then(r => r.json()).then(data => {
         document.getElementById('cfg-listen').textContent = data.listen || '--';
         document.getElementById('cfg-forward').textContent = data.forward || '--';
+        if (data.mode === 'server') {
+            document.getElementById('label-active').textContent = '已连接客户端';
+        } else {
+            document.getElementById('label-active').textContent = '活动通道';
+        }
         document.getElementById('cfg-listen2').textContent = data.listen || '--';
         document.getElementById('cfg-forward2').textContent = data.forward || '--';
         document.getElementById('cfg-token').textContent = data.token ? '***' + data.token.slice(-4) : '--';
