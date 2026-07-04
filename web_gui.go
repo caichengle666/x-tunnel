@@ -177,18 +177,38 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	
+	// Global token display (masked)
 	displayToken := ""
 	if len(token) > 4 {
 		displayToken = "***" + token[len(token)-4:]
 	} else if token != "" {
 		displayToken = "***"
 	}
+	
+	// Server tokens (for multi-server mode)
+	serverTokens := map[string]string{}
+	for _, srv := range tunnelConfig.Servers {
+		name := srv.Name
+		if name == "" { name = srv.URL }
+		if srv.Token != "" {
+			if len(srv.Token) > 4 {
+				serverTokens[name] = "***" + srv.Token[len(srv.Token)-4:]
+			} else {
+				serverTokens[name] = "***"
+			}
+		} else {
+			serverTokens[name] = displayToken
+		}
+	}
+	
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"listen":   listenAddr,
-		"forward":  forwardAddr,
-		"token":    displayToken,
-		"insecure": insecure,
-		"ips":      ips,
+		"listen":        listenAddr,
+		"forward":       forwardAddr,
+		"token":         displayToken,
+		"server_tokens":  serverTokens,
+		"insecure":      insecure,
+		"ips":           ips,
 	})
 }
 
@@ -495,7 +515,15 @@ function fetchConfig() {
         }
         document.getElementById('cfg-listen2').textContent = data.listen || '--';
         document.getElementById('cfg-forward2').textContent = data.forward || '--';
-        document.getElementById('cfg-token').textContent = data.token ? '***' + data.token.slice(-4) : '--';
+        if (data.server_tokens && Object.keys(data.server_tokens).length > 0) {
+            var parts = [];
+            for (var name in data.server_tokens) {
+                parts.push(name + ': ' + data.server_tokens[name]);
+            }
+            document.getElementById('cfg-token').textContent = parts.join(', ');
+        } else {
+            document.getElementById('cfg-token').textContent = data.token ? data.token : '--';
+        }
         document.getElementById('cfg-conn').textContent = data.conn_num || '--';
         document.getElementById('cfg-insecure').textContent = data.insecure;
         document.getElementById('cfg-ips').textContent = data.ips || '默认';
@@ -513,62 +541,12 @@ function fetchLogs() {
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function clearLogs() { document.getElementById('log-container').innerHTML = ''; }
 
-function showEditPanel() {
-    document.getElementById("edit-panel").classList.remove("hidden");
-    document.getElementById("edit-forward").value = (document.getElementById("cfg-forward") || {}).textContent || "";
-    document.getElementById("edit-conn").value = (document.getElementById("cfg-conn") || {}).textContent || "3";
-    document.getElementById("edit-token").value = "";
-    document.getElementById("edit-msg").classList.add("hidden");
-}
-
-function cancelEdit() {
-    document.getElementById("edit-panel").classList.add("hidden");
-}
-
-function saveConfig() {
-    var data = {
-        forward: document.getElementById("edit-forward").value,
-        conn_num: parseInt(document.getElementById("edit-conn").value) || 0,
-        insecure: document.getElementById("edit-insecure").checked
-    };
-    var t = document.getElementById("edit-token").value;
-    if (t) data.token = t;
-    var msgDiv = document.getElementById("edit-msg");
-    msgDiv.className = "mt-2 text-sm text-yellow-400";
-    msgDiv.textContent = "正在保存...";
-    msgDiv.classList.remove("hidden");
-    fetch("/api/update", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(data)
-    }).then(function(r) { return r.json(); }).then(function(resp) {
-        if (resp.success) {
-            msgDiv.className = "mt-2 text-sm text-green-400";
-            msgDiv.textContent = resp.message || "已保存";
-            if (resp.restart) {
-                msgDiv.textContent += " 5 秒后自动重启";
-                setTimeout(function() { restartClient(); }, 5000);
-            } else {
-                document.getElementById("edit-panel").classList.add("hidden");
-            }
-        }
-    }).catch(function() {
-        msgDiv.className = "mt-2 text-sm text-red-400";
-        msgDiv.textContent = "保存失败";
-    });
-}
-
 function restartClient() {
-    var msgDiv = document.getElementById("edit-msg");
-    msgDiv.className = "mt-2 text-sm text-yellow-400";
-    msgDiv.textContent = "正在重启客户端...";
-    msgDiv.classList.remove("hidden");
     fetch("/api/restart", { method: "POST" })
     .then(function(r) { return r.json(); })
     .then(function(resp) {
         if (resp.success) {
-            msgDiv.className = "mt-2 text-sm text-green-400";
-            msgDiv.textContent = resp.message || "重启中";
+            setTimeout(function(){ location.reload(); }, 3000);
         }
     }).catch(function() {});
 }

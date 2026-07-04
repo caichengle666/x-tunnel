@@ -123,10 +123,8 @@ func main() {
 	// 启动 Web GUI（如果 -web 参数已设置）
 	startWebGUI()
 
-	if listenAddr == "" && !tunMode {
-		flag.Usage()
-		return
-	}
+	// Config may be loaded later (line ~240) which sets listenAddr
+	// So we defer the empty check until after config loading
 
 	ipStrategy = parseIPStrategy(ips)
 	if tunMode && strings.TrimSpace(ips) == "" {
@@ -178,44 +176,49 @@ func main() {
 	}
 
 	// ================= 客户端模式 =================
-	if forwardAddr == "" {
-		log.Fatalf("[客户端] 客户端模式必须指定服务地址 (-f ws:// 或 -f wss://)")
+	// 如果要从配置文件加载多服务器，先延迟 forwardAddr 检查
+	configWillLoad := configFile != ""
+	if forwardAddr == "" && !configWillLoad {
+		log.Fatalf("[客户端] 客户端模式必须指定服务地址 (-f ws:// 或 -f wss://，或使用 -config)")
 	}
-	if connectionNum <= 0 {
-		log.Fatalf("[客户端] 参数 -n 必须大于 0 (当前: %d)", connectionNum)
-	}
-
-	forwardURL, err := url.Parse(forwardAddr)
-	if err != nil {
-		log.Fatalf("[客户端] 无效的服务地址: %v", err)
-	}
-	scheme := strings.ToLower(forwardURL.Scheme)
-	if scheme != "wss" && scheme != "ws" {
-		log.Fatalf("[客户端] 仅支持 ws:// 或 wss:// 协议 (当前: %s)", forwardURL.Scheme)
-	}
-
-	if scheme == "wss" {
-		if insecure {
-			if !fallback {
-				fallback = true
-				log.Printf("[客户端] wss 模式且启用不校验证书（insecure）：已自动禁用 ECH（fallback）")
-			} else {
-				log.Printf("[客户端] wss 模式且启用不校验证书（insecure）")
-			}
+	// 当有 config 且 forwardAddr 为空时，跳过单服务器模式初始化
+	if forwardAddr != "" {
+		if connectionNum <= 0 {
+			log.Fatalf("[客户端] 参数 -n 必须大于 0 (当前: %d)", connectionNum)
 		}
-		if !fallback {
-			if err := prepareECH(); err != nil {
-				log.Fatalf("[客户端] 获取 ECH 公钥失败: %v", err)
+
+		forwardURL, err := url.Parse(forwardAddr)
+		if err != nil {
+			log.Fatalf("[客户端] 无效的服务地址: %v", err)
+		}
+		scheme := strings.ToLower(forwardURL.Scheme)
+		if scheme != "wss" && scheme != "ws" {
+			log.Fatalf("[客户端] 仅支持 ws:// 或 wss:// 协议 (当前: %s)", forwardURL.Scheme)
+		}
+
+		if scheme == "wss" {
+			if insecure {
+				if !fallback {
+					fallback = true
+					log.Printf("[客户端] wss 模式且启用不校验证书（insecure）：已自动禁用 ECH（fallback）")
+				} else {
+					log.Printf("[客户端] wss 模式且启用不校验证书（insecure）")
+				}
+			}
+			if !fallback {
+				if err := prepareECH(); err != nil {
+					log.Fatalf("[客户端] 获取 ECH 公钥失败: %v", err)
+				}
+			} else {
+				log.Printf("[客户端] fallback 模式已启用：禁用 ECH，使用标准 TLS 1.3")
 			}
 		} else {
-			log.Printf("[客户端] fallback 模式已启用：禁用 ECH，使用标准 TLS 1.3")
-		}
-	} else {
-		if insecure {
-			log.Printf("[客户端] ws 模式已忽略 insecure 参数")
-		}
-		if fallback {
-			log.Printf("[客户端] ws 模式已忽略 fallback/ECH 参数")
+			if insecure {
+				log.Printf("[客户端] ws 模式已忽略 insecure 参数")
+			}
+			if fallback {
+				log.Printf("[客户端] ws 模式已忽略 fallback/ECH 参数")
+			}
 		}
 	}
 
@@ -239,18 +242,22 @@ func main() {
 	log.Printf("[客户端] 客户端ID: %s", clientID)
 
 	// 尝试加载配置文件（多服务器模式）
-	if configFile == "" {
+	// 注意：如果已明确指定 -f 参数，跳过配置文件加载
+	if forwardAddr == "" && configFile == "" {
 		configFile = FindConfig()
 	}
-	if configFile != "" {
+	if configFile != "" && forwardAddr == "" {
 		cfg, err := LoadConfig(configFile)
 		if err != nil {
 			log.Printf("[客户端] 加载配置文件失败: %v，使用命令行参数", err)
 		}
 		if err == nil && len(cfg.Servers) > 0 {
 			tunnelConfig = *cfg
-			log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s)",
-				configFile, len(cfg.Servers), cfg.Strategy)
+			if cfg.Listen != "" && listenAddr == "" {
+				listenAddr = cfg.Listen
+			}
+			log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s, 监听: %s)",
+				configFile, len(cfg.Servers), cfg.Strategy, listenAddr)
 			echPool = NewMultiPool(&tunnelConfig)
 			echPool.Start()
 		} else {
@@ -275,6 +282,29 @@ func main() {
 		tunnelConfig = *simpleCfg
 		echPool = NewMultiPool(simpleCfg)
 		echPool.Start()
+	}
+
+	// Now that config is loaded, check if we have a listen address
+	if listenAddr == "" && !tunMode {
+		log.Printf("[客户端] 错误: 未指定监听地址（-l 参数或 config.json 中的 listen 字段）")
+		flag.Usage()
+		return
+	}
+
+	// Re-split listenAddr now that config may have set it
+	listeners = strings.Split(listenAddr, ",")
+	isServer = false
+	for _, l := range listeners {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "ws://") || strings.HasPrefix(l, "wss://") {
+			isServer = true
+			listenAddr = l
+			break
+		}
+	}
+	if isServer {
+		runWebSocketServer(listenAddr)
+		return
 	}
 
 	runTUNModeIfNeeded()
@@ -1648,6 +1678,7 @@ type ECHPool struct {
 	connectionNum int
 	targetIPs     []string
 	clientID      string
+	authToken     string
 
 	wsConnsMu     sync.RWMutex
 	smuxConns     []*smux.Session
@@ -1661,7 +1692,7 @@ type ECHPool struct {
 	cancel        context.CancelFunc
 }
 
-func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
+func NewECHPool(addr string, n int, ips []string, clientID string, authToken string) *ECHPool {
 	total := n
 	if len(ips) > 0 {
 		total = len(ips) * n
@@ -1671,6 +1702,7 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 		connectionNum: n,
 		targetIPs:     ips,
 		clientID:      clientID,
+		authToken:     authToken,
 		smuxConns:     make([]*smux.Session, total),
 		channelRTT:    make([]int64, total),
 		readyCh:       make(chan struct{}, 1),
@@ -2177,8 +2209,8 @@ func (p *ECHPool) dialWebSocketWithECH(addr string, retries int, ip string, clie
 			ReadBufferSize:   cfg.ReadBuf,
 			WriteBufferSize:  cfg.ReadBuf,
 		}
-		if token != "" {
-			dialer.Subprotocols = []string{token}
+		if p.authToken != "" {
+			dialer.Subprotocols = []string{p.authToken}
 		}
 		// 自定义 dialer
 		dialer.NetDial = func(network, address string) (net.Conn, error) {

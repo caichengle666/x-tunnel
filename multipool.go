@@ -64,7 +64,9 @@ func NewMultiPool(cfg *TunnelConfig) *MultiPool {
 func (mp *MultiPool) Start() {
 	for _, sp := range mp.servers {
 		sp.mu.Lock()
-		sp.Pool = NewECHPool(sp.Config.URL, sp.Config.Connections, nil, clientID)
+		srvToken := sp.Config.Token
+		if srvToken == "" { srvToken = token }
+		sp.Pool = NewECHPool(sp.Config.URL, sp.Config.Connections, nil, clientID, srvToken)
 		sp.Pool.Start()
 		sp.State = PoolHealthy
 		sp.Updated = time.Now()
