@@ -10,7 +10,6 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
-	"strings"
 	"time"
 
 )
@@ -350,32 +349,22 @@ function fetchStatus() {
             document.getElementById('active-channels').textContent = '0';
             hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400';
         }
+        // Update strategy display + select
+        if (data.strategy) {
+            var stratEl = document.getElementById('cfg-strategy');
+            if (stratEl) stratEl.textContent = data.strategy;
+            var sel = document.getElementById('cfg-strategy-select');
+            if (sel) sel.value = data.strategy;
+        }
         // Render servers
         renderServers(data);
     }).catch(() => {});
 }
-
-        if (data.channels) {
-            document.getElementById('active-channels').textContent = data.channels.length;
-            let html = '';
-            data.channels.forEach(ch => {
-                const dot = ch.status === '已连接' ? 'status-online' : 'status-offline';
-                html += '<tr class="border-b border-gray-700/50"><td class="py-2 px-3">#' + ch.ID + '</td><td class="py-2 px-3"><span class="status-dot ' + dot + '"></span> ' + ch.status + '</td><td class="py-2 px-3">' + ch.rtt + '</td></tr>';
-            });
-            document.getElementById('channels-body').innerHTML = html;
-        }
-        const hs = document.getElementById('health-status');
-        if (data.mode === 'server') {
-            document.getElementById('active-channels').textContent = data.clients;
-            hs.textContent = '✓ 正常'; hs.className = 'text-2xl font-bold text-green-400';
-        } else if (data.healthy) {
-            document.getElementById('active-channels').textContent = data.channels ? data.channels.length : 0;
-            hs.textContent = '✓ 健康'; hs.className = 'text-2xl font-bold text-green-400';
-        } else {
-            document.getElementById('active-channels').textContent = '0';
-            hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400';
-        }
-    }).catch(() => {});
+function formatBytes(b) {
+    if (b < 1024) return b + 'B';
+    if (b < 1048576) return (b/1024).toFixed(1) + 'KB';
+    if (b < 1073741824) return (b/1048576).toFixed(1) + 'MB';
+    return (b/1073741824).toFixed(2) + 'GB';
 }
 
 function renderServers(data) {
@@ -390,22 +379,39 @@ function renderServers(data) {
         var stateMap = {healthy:'健康', degraded:'降级', dead:'死亡', unknown:'未知'};
         var stateColor = {healthy:'text-green-400', degraded:'text-yellow-400', dead:'text-red-400', unknown:'text-gray-400'};
         var dotColor = s.healthy ? 'bg-green-400' : 'bg-red-400';
-        html += '<div class="bg-gray-900 rounded-lg p-4 flex items-center justify-between">' +
-            '<div class="flex items-center space-x-3">' +
-                '<span class="w-2 h-2 rounded-full ' + dotColor + '"></span>' +
-                '<div>' +
-                    '<div class="font-semibold">' + escapeHtml(s.name) + '</div>' +
-                    '<div class="text-xs text-gray-400">' + escapeHtml(s.url) + '</div>' +
-                '</div>' +
-            '</div>' +
-            '<div class="flex items-center space-x-4 text-sm">' +
-                '<span class="' + (stateColor[s.state] || 'text-gray-400') + '">' + (stateMap[s.state] || s.state) + '</span>' +
-                (s.rtt > 0 ? '<span class="text-gray-400">' + s.rtt + 'ms</span>' : '') +
-                '<span class="text-gray-400">' + s.channels + ' 通道</span>' +
-            '</div>' +
-        '</div>';
+        var sent = formatBytes(s.sent || 0);
+        var recv = formatBytes(s.recv || 0);
+        html += '<div class="bg-gray-900 rounded-lg p-4"><div class="flex items-center justify-between"><div class="flex items-center space-x-3"><span class="w-2 h-2 rounded-full ' + dotColor + '"></span><div><div class="font-semibold">' + escapeHtml(s.name || '') + '</div><div class="text-xs text-gray-400">' + escapeHtml(s.url || '') + '</div><div class="text-xs text-gray-500">↑ ' + sent + '  ↓ ' + recv + '</div></div></div><div class="flex items-center space-x-3 text-sm"><span class="' + (stateColor[s.state] || 'text-gray-400') + '">' + (stateMap[s.state] || s.state) + '</span>' + (s.rtt > 0 ? '<span class="text-gray-400">' + s.rtt + 'ms</span>' : '') + '<span class="text-gray-400">' + s.channels + ' 通道</span><button onclick="editServer(' + i + ')" class="px-2 py-1 bg-blue-700 rounded text-xs hover:bg-blue-600">编辑</button><button onclick="deleteServer(' + i + ')" class="px-2 py-1 bg-red-700 rounded text-xs hover:bg-red-600">删除</button></div></div></div>';
     });
     container.innerHTML = html;
+}
+
+function editServer(idx) {
+    fetch('/api/status').then(function(r){return r.json()}).then(function(data){
+        var s = data.servers[idx];
+        if (!s) return;
+        document.getElementById('srv-name').value = s.name || '';
+        document.getElementById('srv-url').value = s.url || '';
+        document.getElementById('srv-token').value = '';
+        document.getElementById('srv-conn').value = '3';
+        document.getElementById('srv-weight').value = '100';
+        document.getElementById('srv-msg').textContent = '编辑服务器: ' + (s.name || idx);
+        document.getElementById('srv-msg').className = 'mt-2 text-sm text-blue-400';
+        document.getElementById('srv-msg').classList.remove('hidden');
+        document.getElementById('add-server-panel').classList.remove('hidden');
+        document.getElementById('add-server-panel').setAttribute('data-edit-idx', String(idx));
+    });
+}
+
+function deleteServer(idx) {
+    if (!confirm('确定删除这台服务器？')) return;
+    fetch('/api/servers/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx})
+    }).then(function(r){return r.json()}).then(function(resp){
+        if (resp.success) { fetch('/api/restart', { method: 'POST' }); alert('已删除，正在重启...'); setTimeout(location.reload, 5000); }
+        else { alert('删除失败'); }
+    }).catch(function(){ alert('请求失败'); });
 }
 
 function changeStrategy() {
@@ -432,29 +438,49 @@ function cancelAddServer() {
 }
 
 function saveServer() {
+    var editIdx = document.getElementById('add-server-panel').getAttribute('data-edit-idx');
     var data = {
-        name: document.getElementById('srv-name').value,
+        name: document.getElementById('srv-name').value || '未命名',
         url: document.getElementById('srv-url').value,
-        token: document.getElementById('srv-token').value || undefined,
+        token: document.getElementById('srv-token').value || '',
         connections: parseInt(document.getElementById('srv-conn').value) || 3,
         weight: parseInt(document.getElementById('srv-weight').value) || 100
     };
     if (document.getElementById('srv-insecure').checked) data.insecure = true;
+    if (!data.url) {
+        var msgDiv = document.getElementById('srv-msg');
+        msgDiv.className = 'mt-2 text-sm text-red-400';
+        msgDiv.textContent = 'URL 不能为空';
+        msgDiv.classList.remove('hidden');
+        return;
+    }
     var msgDiv = document.getElementById('srv-msg');
     msgDiv.className = 'mt-2 text-sm text-yellow-400';
-    msgDiv.textContent = '正在添加...';
+    msgDiv.textContent = '正在保存...';
     msgDiv.classList.remove('hidden');
-    // For now, save strategy update and trigger restart
-    fetch('/api/update', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({})
-    }).then(function(r) { return r.json(); }).then(function(resp) {
-        msgDiv.className = 'mt-2 text-sm text-green-400';
-        msgDiv.textContent = '请在 config.json 中添加此服务器后重启客户端';
+    var url, body;
+    if (editIdx !== null && editIdx !== '') {
+        url = '/api/servers/update';
+        body = JSON.stringify({index: parseInt(editIdx), server: data});
+    } else {
+        url = '/api/servers/add';
+        body = JSON.stringify(data);
+    }
+    fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: body })
+    .then(function(r) { return r.json(); })
+    .then(function(resp) {
+        if (resp.success) {
+            msgDiv.className = 'mt-2 text-sm text-green-400';
+            msgDiv.textContent = '已保存，正在重启客户端...';
+            fetch('/api/restart', { method: 'POST' });
+            setTimeout(function(){ cancelAddServer(); location.reload(); }, 5000);
+        } else {
+            msgDiv.className = 'mt-2 text-sm text-red-400';
+            msgDiv.textContent = '保存失败: ' + (resp.message || '');
+        }
     }).catch(function() {
         msgDiv.className = 'mt-2 text-sm text-red-400';
-        msgDiv.textContent = '添加失败';
+        msgDiv.textContent = '请求失败';
     });
 }
 
@@ -564,6 +590,7 @@ type updateRequest struct {
     ConnNum  int    `json:"conn_num,omitempty"`
     Insecure *bool   `json:"insecure,omitempty"`
     IPs      string `json:"ips,omitempty"`
+    Strategy string `json:"strategy,omitempty"`
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -618,6 +645,14 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
         changes = append(changes, "ips")
         reconnectNeeded = true
     }
+    if req.Strategy != "" && req.Strategy != tunnelConfig.Strategy {
+        log.Printf("[热加载] strategy: %s -> %s", tunnelConfig.Strategy, req.Strategy)
+        tunnelConfig.Strategy = req.Strategy
+        if echPool != nil {
+            echPool.strategy = req.Strategy
+        }
+        changes = append(changes, "strategy")
+    }
 
     msg := "配置已更新"
     if reconnectNeeded {
@@ -647,25 +682,40 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 
         time.Sleep(1 * time.Second)
 
-        if forwardAddr != "" && echPool != nil {
+        if echPool != nil {
             echPool.Stop()
             echPool = nil
-            var newIPs []string
-            if ipAddr != "" {
-                for _, p := range strings.Split(ipAddr, ",") {
-                    if trimmed := strings.TrimSpace(p); trimmed != "" {
-                        newIPs = append(newIPs, trimmed)
-                    }
+        }
+        // Rebuild from current tunnelConfig (supports multi-server)
+        if len(tunnelConfig.Servers) > 0 {
+            // Ensure each server has defaults
+            for i := range tunnelConfig.Servers {
+                if tunnelConfig.Servers[i].Name == "" {
+                    tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
+                }
+                if tunnelConfig.Servers[i].Connections <= 0 {
+                    tunnelConfig.Servers[i].Connections = tunnelConfig.Connections
+                }
+                if tunnelConfig.Servers[i].Connections <= 0 {
+                    tunnelConfig.Servers[i].Connections = 3
                 }
             }
-            simpleCfg := &TunnelConfig{
-                Strategy: "failover",
-                Servers:  []ServerConfig{{URL: forwardAddr, Token: token, Connections: connectionNum}},
-            }
-            tunnelConfig = *simpleCfg
-            echPool = NewMultiPool(simpleCfg)
+            echPool = NewMultiPool(&tunnelConfig)
             echPool.Start()
-            log.Printf("[热加载] 客户端重启完成，已连接 %s", forwardAddr)
+            serverNames := make([]string, 0, len(tunnelConfig.Servers))
+            for _, s := range tunnelConfig.Servers {
+                serverNames = append(serverNames, s.Name)
+            }
+            log.Printf("[热加载] 客户端重启完成，%d 台服务器: %v", len(tunnelConfig.Servers), serverNames)
+        } else if forwardAddr != "" {
+            // Single-server fallback
+            tunnelConfig.Servers = []ServerConfig{{Name: forwardAddr, URL: forwardAddr, Token: token, Connections: connectionNum}}
+            if tunnelConfig.Strategy == "" {
+                tunnelConfig.Strategy = "failover"
+            }
+            echPool = NewMultiPool(&tunnelConfig)
+            echPool.Start()
+            log.Printf("[热加载] 客户端重启完成（单服务器模式）: %s", forwardAddr)
         }
     }()
 

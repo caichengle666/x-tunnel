@@ -285,6 +285,8 @@ func (mp *MultiPool) Servers() []ServerStatus {
 			Channels:  channels,
 			Healthy:   healthy,
 			Updated:   sp.Updated,
+			Sent:      atomic.LoadInt64(&sp.Pool.bytesSent),
+			Recv:      atomic.LoadInt64(&sp.Pool.bytesRecv),
 		})
 	}
 	return result
@@ -298,6 +300,8 @@ type ServerStatus struct {
 	RTT      int64     `json:"rtt"`
 	Channels int       `json:"channels"`
 	Healthy  bool      `json:"healthy"`
+	Sent     int64     `json:"sent"`
+	Recv     int64     `json:"recv"`
 	Updated  time.Time `json:"updated"`
 }
 

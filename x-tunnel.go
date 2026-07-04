@@ -1654,6 +1654,8 @@ type ECHPool struct {
 	channelRTT    []int64
 	selectCounter uint64
 	readyCh       chan struct{}
+	bytesSent     int64
+	bytesRecv     int64
 	readyOnce     sync.Once
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -2752,4 +2754,27 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	logClientConnEvent(c, "HTTP", target, decision, true)
 	defer logClientConnEvent(c, "HTTP", target, decision, false)
 	proxyConnStream(c, stream)
+}
+
+
+type countingStream struct {
+	*smux.Stream
+	counter     *int64
+	recvCounter *int64
+}
+
+func (cs *countingStream) Write(p []byte) (int, error) {
+	n, err := cs.Stream.Write(p)
+	if n > 0 {
+		atomic.AddInt64(cs.counter, int64(n))
+	}
+	return n, err
+}
+
+func (cs *countingStream) Read(p []byte) (int, error) {
+	n, err := cs.Stream.Read(p)
+	if n > 0 {
+		atomic.AddInt64(cs.recvCounter, int64(n))
+	}
+	return n, err
 }
