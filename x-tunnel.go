@@ -1687,6 +1687,12 @@ type ECHPool struct {
 	readyCh       chan struct{}
 	bytesSent     int64
 	bytesRecv     int64
+	sentSpeed     int64 // bytes per second
+	recvSpeed     int64
+	lastBytesSent int64
+	lastBytesRecv int64
+	lastSpeedTime time.Time
+	speedStop     chan struct{}
 	readyOnce     sync.Once
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -1697,6 +1703,7 @@ func NewECHPool(addr string, n int, ips []string, clientID string, authToken str
 	if len(ips) > 0 {
 		total = len(ips) * n
 	}
+	now := time.Now()
 	p := &ECHPool{
 		wsServerAddr:  addr,
 		connectionNum: n,
@@ -1706,12 +1713,58 @@ func NewECHPool(addr string, n int, ips []string, clientID string, authToken str
 		smuxConns:     make([]*smux.Session, total),
 		channelRTT:    make([]int64, total),
 		readyCh:       make(chan struct{}, 1),
+		lastSpeedTime: now,
+		speedStop:     make(chan struct{}),
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	
+	// 速度计算 goroutine
+	go p.speedCalc()
 	return p
 }
 
 // WaitForChannelReady 阻塞直到至少一条 smux 通道就绪或超时。
+
+// speedCalc 每秒计算传输速度
+func (p *ECHPool) speedCalc() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			curSent := atomic.LoadInt64(&p.bytesSent)
+			curRecv := atomic.LoadInt64(&p.bytesRecv)
+			
+			lastSent := atomic.LoadInt64(&p.lastBytesSent)
+			lastRecv := atomic.LoadInt64(&p.lastBytesRecv)
+			lastTime := p.lastSpeedTime
+			
+			elapsed := now.Sub(lastTime).Seconds()
+			if elapsed > 0 {
+				sentDiff := curSent - lastSent
+				recvDiff := curRecv - lastRecv
+				if sentDiff < 0 { sentDiff = 0 }
+				if recvDiff < 0 { recvDiff = 0 }
+				atomic.StoreInt64(&p.sentSpeed, int64(float64(sentDiff)/elapsed))
+				atomic.StoreInt64(&p.recvSpeed, int64(float64(recvDiff)/elapsed))
+			}
+			
+			atomic.StoreInt64(&p.lastBytesSent, curSent)
+			atomic.StoreInt64(&p.lastBytesRecv, curRecv)
+			p.lastSpeedTime = now
+			
+		case <-p.speedStop:
+			return
+		}
+	}
+}
+
+// Stop 停止速度计算
+func (p *ECHPool) StopSpeed() {
+	close(p.speedStop)
+}
+
 func (p *ECHPool) Stop() {
 	if p.cancel != nil {
 		p.cancel()
