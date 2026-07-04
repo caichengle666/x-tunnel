@@ -791,7 +791,9 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 
         if echPool != nil {
             echPool.Stop()
+		stopAllListeners()  // close old listeners before restart
             echPool = nil
+            stopAllListeners()  // close old listeners before restart
         }
         // Rebuild from current tunnelConfig (supports multi-server)
         if len(tunnelConfig.Servers) > 0 {
@@ -809,6 +811,10 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
             }
             echPool = NewMultiPool(&tunnelConfig)
             echPool.Start()
+		startListeners()
+		startListeners()  // restart listeners on (possibly new) ports
+            startListeners()  // start listeners on (possibly new) ports
+            startListeners()  // start listeners on (possibly new) ports
             serverNames := make([]string, 0, len(tunnelConfig.Servers))
             for _, s := range tunnelConfig.Servers {
                 serverNames = append(serverNames, s.Name)

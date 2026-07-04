@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bufio"
@@ -57,6 +57,8 @@ var bufPool = sync.Pool{New: func() any { b := make([]byte, 64*1024); return &b 
 var (
 	listenAddr       string
 	forwardAddr      string
+	listenerStop     chan struct{}
+	activeListeners  []net.Listener
 	ipAddr           string
 	udpBlockPortsStr string
 	certFile         string
@@ -117,11 +119,48 @@ func init() {
 	flag.StringVar(&ips, "ips", "", "服务端解析目标地址的IP偏好 (仅客户端有效)\n 4: 仅IPv4\n 6: 仅IPv6\n 4,6: IPv4优先\n 6,4: IPv6优先")
 }
 
+// stopAllListeners closes all local listeners for hot restart
+func stopAllListeners() {
+	if listenerStop != nil {
+		select {
+		case <-listenerStop:
+		default:
+			close(listenerStop)
+		}
+	}
+	for _, l := range activeListeners {
+		if l != nil { l.Close() }
+	}
+	activeListeners = []net.Listener{}
+	listenerStop = make(chan struct{})
+}
+
+// startListeners launches local proxy listeners based on listenAddr
+func startListeners() {
+	listenerRules := strings.Split(listenAddr, ",")
+	for _, listenerRule := range listenerRules {
+		rule := strings.TrimSpace(listenerRule)
+		if rule == "" { continue }
+		if strings.HasPrefix(rule, "tcp://") {
+			go runTCPListener(rule)
+		} else if strings.HasPrefix(rule, "socks5://") {
+			go runSOCKS5Listener(rule)
+		} else if strings.HasPrefix(rule, "http://") {
+			go runHTTPListener(rule)
+		} else {
+			log.Printf("[客户端] 忽略未知协议的监听地址: %s", rule)
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 
 	// 启动 Web GUI（如果 -web 参数已设置）
 	startWebGUI()
+
+	listenerStop = make(chan struct{})
+	activeListeners = []net.Listener{}
 
 	// Config may be loaded later (line ~240) which sets listenAddr
 	// So we defer the empty check until after config loading
@@ -345,6 +384,9 @@ func main() {
 		// TUN 模式下 StartTun 内部 select{} 阻塞，这里也阻塞主 goroutine
 		select {}
 	}
+
+	// Keep main goroutine alive after listener hot restart
+	select {}
 }
 
 func parseIPStrategy(s string) byte {
@@ -2207,13 +2249,26 @@ func runTCPListener(rule string) {
 	lAddr, tAddr := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 	l, err := net.Listen("tcp", lAddr)
 	if err != nil {
-		log.Fatalf("[客户端] TCP监听失败: %v", err)
+		log.Printf("[客户端] TCP监听失败: %v", err)
+		return
 	}
 	log.Printf("[客户端] TCP转发: %s -> %s", lAddr, tAddr)
+	activeListeners = append(activeListeners, l)
 	for {
+		select {
+		case <-listenerStop:
+			l.Close()
+			return
+		default:
+		}
 		c, err := l.Accept()
 		if err != nil {
-			continue
+			select {
+			case <-listenerStop:
+				return
+			default:
+				continue
+			}
 		}
 		go handleLocalTCP(c, tAddr)
 	}
@@ -2419,18 +2474,32 @@ func parseAuthAndAddr(full string) (string, string, string, error) {
 func runSOCKS5Listener(addr string) {
 	h, u, p, err := parseAuthAndAddr(strings.TrimPrefix(addr, "socks5://"))
 	if err != nil {
-		log.Fatalf("[客户端] SOCKS5地址解析失败: %v", err)
+		log.Printf("[客户端] SOCKS5地址解析失败: %v", err)
+		return
 	}
 	l, err := net.Listen("tcp", h)
 	if err != nil {
-		log.Fatalf("[客户端] SOCKS5监听失败: %v", err)
+		log.Printf("[客户端] SOCKS5监听失败: %v", err)
+		return
 	}
 	log.Printf("[客户端] SOCKS5 代理: %s", h)
+	activeListeners = append(activeListeners, l)
 	cfgp := &ProxyConfig{u, p, h}
 	for {
+		select {
+		case <-listenerStop:
+			l.Close()
+			return
+		default:
+		}
 		c, err := l.Accept()
 		if err != nil {
-			continue
+			select {
+			case <-listenerStop:
+				return
+			default:
+				continue
+			}
 		}
 		go handleSOCKS5(c, cfgp)
 	}
@@ -2797,14 +2866,27 @@ func runHTTPListener(addr string) {
 	h, u, p, _ := parseAuthAndAddr(strings.TrimPrefix(addr, "http://"))
 	l, err := net.Listen("tcp", h)
 	if err != nil {
-		log.Fatalf("[客户端] HTTP监听失败: %v", err)
+		log.Printf("[客户端] HTTP监听失败: %v", err)
+		return
 	}
 	log.Printf("[客户端] HTTP 代理: %s", h)
+	activeListeners = append(activeListeners, l)
 	cfgp := &ProxyConfig{u, p, h}
 	for {
+		select {
+		case <-listenerStop:
+			l.Close()
+			return
+		default:
+		}
 		c, err := l.Accept()
 		if err != nil {
-			continue
+			select {
+			case <-listenerStop:
+				return
+			default:
+				continue
+			}
 		}
 		go handleHTTP(c, cfgp)
 	}
