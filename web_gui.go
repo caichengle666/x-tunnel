@@ -58,6 +58,10 @@ func startWebGUI() {
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/api/update", handleUpdateConfig)
 	mux.HandleFunc("/api/restart", handleRestartClient)
+mux.HandleFunc("/api/servers/add", handleAddServer)
+mux.HandleFunc("/api/servers/update", handleUpdateServer)
+mux.HandleFunc("/api/servers/delete", handleDeleteServer)
+mux.HandleFunc("/api/saveconfig", handleSaveConfig)
 
 	go func() {
 		log.Printf("[Web GUI] 监听 %s", webListen)
@@ -704,3 +708,91 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
     })
 }
 
+
+
+// ======================== Multi-Server Management ========================
+
+func handleAddServer(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+    body, err := io.ReadAll(r.Body)
+    if err != nil { http.Error(w, "read error", 400); return }
+    var srv ServerConfig
+    if err := json.Unmarshal(body, &srv); err != nil { http.Error(w, "json error", 400); return }
+    if srv.URL == "" { http.Error(w, "URL required", 400); return }
+    if srv.Connections <= 0 { srv.Connections = 3 }
+    if srv.Weight <= 0 { srv.Weight = 100 }
+    tunnelConfig.Servers = append(tunnelConfig.Servers, srv)
+    _ = saveConfigToFile()
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        if echPool != nil { echPool.Stop() }
+        echPool = NewMultiPool(&tunnelConfig)
+        echPool.Start()
+    }()
+}
+
+func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+    body, _ := io.ReadAll(r.Body)
+    var req struct {
+        Index  int          `json:"index"`
+        Server ServerConfig `json:"server"`
+    }
+    if err := json.Unmarshal(body, &req); err != nil { http.Error(w, "json error", 400); return }
+    if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) { http.Error(w, "bad index", 400); return }
+    if req.Server.Connections <= 0 { req.Server.Connections = 3 }
+    if req.Server.Weight <= 0 { req.Server.Weight = 100 }
+    tunnelConfig.Servers[req.Index] = req.Server
+    _ = saveConfigToFile()
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        if echPool != nil { echPool.Stop() }
+        echPool = NewMultiPool(&tunnelConfig)
+        echPool.Start()
+    }()
+}
+
+func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+    body, _ := io.ReadAll(r.Body)
+    var req struct { Index int `json:"index"` }
+    if err := json.Unmarshal(body, &req); err != nil { http.Error(w, "json error", 400); return }
+    if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) { http.Error(w, "bad index", 400); return }
+    tunnelConfig.Servers = append(tunnelConfig.Servers[:req.Index], tunnelConfig.Servers[req.Index+1:]...)
+    _ = saveConfigToFile()
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        if echPool != nil { echPool.Stop() }
+        if len(tunnelConfig.Servers) > 0 {
+            echPool = NewMultiPool(&tunnelConfig)
+            echPool.Start()
+        }
+    }()
+}
+
+func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+    body, _ := io.ReadAll(r.Body)
+    if len(body) > 0 {
+        var newCfg TunnelConfig
+        if err := json.Unmarshal(body, &newCfg); err == nil {
+            tunnelConfig = newCfg
+        }
+    }
+    if err := saveConfigToFile(); err != nil { http.Error(w, "save error", 500); return }
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "saved"})
+}
+
+func saveConfigToFile() error {
+    p := configFile
+    if p == "" { p = FindConfig() }
+    if p == "" { p = "config.json" }
+    return SaveConfig(p, &tunnelConfig)
+}
