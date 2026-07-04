@@ -107,6 +107,7 @@ func statusJSON() map[string]interface{} {
 
 	// Client mode
 	result["mode"]     = "client"
+	result["listen"]   = listenAddr
 	result["server"]   = forwardAddr
 	result["client_id"] = clientID
 
@@ -390,6 +391,10 @@ function fetchStatus() {
             var sel = document.getElementById('cfg-strategy-select');
             if (sel) sel.value = data.strategy;
         }
+        // Update listen address
+        var listenEl = document.getElementById('cfg-listen');
+        if (listenEl) listenEl.textContent = data.listen || data.server || '--';
+        
         // Render servers
         renderServers(data);
     }).catch(() => {});
