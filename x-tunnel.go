@@ -1884,23 +1884,54 @@ func shortID(id string) string {
 }
 
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
-	done := make(chan struct{}, 2)
+	var sent, recv int64
+	wg := sync.WaitGroup{}
+	wg.Add(2)
 	go func() {
-		_, _ = io.Copy(stream, c)
-		done <- struct{}{}
+		defer wg.Done()
+		n, _ := io.Copy(stream, c)
+		atomic.StoreInt64(&sent, n)
 	}()
 	go func() {
-		_, _ = io.Copy(c, stream)
-		done <- struct{}{}
+		defer wg.Done()
+		n, _ := io.Copy(c, stream)
+		atomic.StoreInt64(&recv, n)
 	}()
+
+	// 等待任一方向完成
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
 	<-done
 
-	// 立即关闭双方，强制中断另一方向的 io.Copy
+	// 更新统计
+	if sp, ok := streamUserdata(stream); ok {
+		atomic.AddInt64(&sp.bytesSent, atomic.LoadInt64(&sent))
+		atomic.AddInt64(&sp.bytesRecv, atomic.LoadInt64(&recv))
+	}
+
+	// 清理 stream 映射
+	poolStreamMap.Delete(stream)
+
+	// 立即关闭双方
 	_ = stream.Close()
 	_ = c.Close()
-
-	<-done // 等待另一方向退出
 }
+
+// streamUserdata 从 stream 获取关联的 ECHPool
+func streamUserdata(stream *smux.Stream) (*ECHPool, bool) {
+	if stream == nil {
+		return nil, false
+	}
+	v, ok := poolStreamMap.Load(stream)
+	if !ok {
+		return nil, false
+	}
+	p, ok := v.(*ECHPool)
+	return p, ok
+}
+
+// poolStreamMap 存储 stream 到 ECHPool 的映射
+var poolStreamMap sync.Map // map[*smux.Stream]*ECHPool  （实际类型是 interface{}）
 
 func readTunnelStatus(stream *smux.Stream) error {
 	status := make([]byte, 1)
@@ -2014,8 +2045,10 @@ func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
 	if err != nil {
 		return nil, 0, 0, err
 	}
+	poolStreamMap.Store(s, p)
 	if err := writeSmuxOpenHeader(s, streamKindTCP, ipStrategy, target); err != nil {
 		_ = s.Close()
+		poolStreamMap.Delete(s)
 		return nil, 0, 0, err
 	}
 	return s, chID, decision, nil
@@ -2026,8 +2059,10 @@ func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
 	if err != nil {
 		return nil, 0, 0, err
 	}
+	poolStreamMap.Store(s, p)
 	if err := writeSmuxOpenHeader(s, streamKindUDP, ipStrategy, target); err != nil {
 		_ = s.Close()
+		poolStreamMap.Delete(s)
 		return nil, 0, 0, err
 	}
 	return s, chID, decision, nil
