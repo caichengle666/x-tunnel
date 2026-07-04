@@ -325,14 +325,18 @@ const dashboardHTML = `<!DOCTYPE html>
 
     <!-- Config Section -->
     <div class="bg-gray-800 rounded-lg p-6 mb-8">
-        <h2 class="text-xl font-semibold mb-4">全局配置</h2>
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold">全局配置</h2>
+            <button onclick="editGlobalConfig()" class="px-3 py-1 bg-blue-700 text-white rounded text-sm hover:bg-blue-600">修改</button>
+        </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
-            <div><span class="text-gray-400">监听:</span> <span id="cfg-listen2"></span></div>
-            <div><span class="text-gray-400">Token:</span> <span id="cfg-token"></span></div>
-            <div><span class="text-gray-400">连接数:</span> <span id="cfg-conn"></span></div>
-            <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips"></span></div>
+            <div><span class="text-gray-400">监听:</span> <span id="cfg-listen2">--</span></div>
+            <div><span class="text-gray-400">连接数:</span> <span id="cfg-conn">--</span></div>
+            <div><span class="text-gray-400">模式:</span> <span id="cfg-strategy">--</span></div>
+            <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips">--</span></div>
         </div>
     </div>
+
 
     <!-- Channels -->
     <div class="bg-gray-800 rounded-lg p-6 mb-8">
@@ -519,7 +523,10 @@ function saveServer() {
     .then(function(resp) {
         if (resp.success) {
             msgDiv.className = 'mt-2 text-sm text-green-400';
-            msgDiv.textContent = '已保存，正在重启客户端...';
+            msgDiv.textContent = '已保存，正在重启...';
+            if (resp.restart) {
+                fetch('/api/restart', { method: 'POST' });
+            }
             fetch('/api/restart', { method: 'POST' });
             setTimeout(function(){ cancelAddServer(); location.reload(); }, 5000);
         } else {
@@ -572,9 +579,93 @@ function restartClient() {
 
 fetchStatus(); fetchConfig(); fetchLogs();
 setInterval(fetchStatus, 3000);
+
+// ======================== 全局配置编辑 ========================
+
+function editGlobalConfig() {
+    fetch('/api/config').then(function(r){return r.json()}).then(function(data){
+        document.getElementById('edit-listen').value = data.listen || '';
+        document.getElementById('edit-connections').value = data.connections || '3';
+        document.getElementById('edit-strategy').value = data.strategy || 'failover';
+        document.getElementById('edit-ips').value = data.ips || '';
+        document.getElementById('global-config-panel').classList.remove('hidden');
+    });
+}
+
+function cancelGlobalConfig() {
+    document.getElementById('global-config-panel').classList.add('hidden');
+}
+
+function saveGlobalConfig() {
+    var body = {
+        listen: document.getElementById('edit-listen').value,
+        connections: parseInt(document.getElementById('edit-connections').value) || 3,
+        strategy: document.getElementById('edit-strategy').value,
+        ips: document.getElementById('edit-ips').value
+    };
+    var msgDiv = document.getElementById('edit-global-msg');
+    msgDiv.className = 'mt-2 text-sm text-yellow-400';
+    msgDiv.textContent = '正在保存...';
+    msgDiv.classList.remove('hidden');
+    fetch('/api/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    }).then(function(r){return r.json()}).then(function(resp){
+        if (resp.success) {
+            msgDiv.className = 'mt-2 text-sm text-green-400';
+            msgDiv.textContent = '已保存，正在重启...';
+            if (resp.restart) {
+                fetch('/api/restart', { method: 'POST' });
+            }
+            setTimeout(function(){ cancelGlobalConfig(); location.reload(); }, 5000);
+        } else {
+            msgDiv.className = 'mt-2 text-sm text-red-400';
+            msgDiv.textContent = '保存失败: ' + (resp.message || '');
+        }
+    }).catch(function(){
+        msgDiv.className = 'mt-2 text-sm text-red-400';
+        msgDiv.textContent = '请求失败';
+    });
+}
 setInterval(fetchConfig, 10000);
 setInterval(fetchLogs, 2000);
 </script>
+
+    <!-- Global Config Edit Modal -->
+    <div id="global-config-panel" class="fixed inset-0 bg-black/70 flex items-center justify-center hidden" style="z-index:1000">
+        <div class="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+            <h2 class="text-xl font-semibold mb-4">修改全局配置</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="text-gray-400 text-sm">监听地址</label>
+                    <input id="edit-listen" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="socks5://127.0.0.1:1080,http://127.0.0.1:30001">
+                </div>
+                <div>
+                    <label class="text-gray-400 text-sm">连接数</label>
+                    <input id="edit-connections" type="number" class="w-full bg-gray-700 text-white rounded p-2 mt-1" value="3" min="1" max="20">
+                </div>
+                <div>
+                    <label class="text-gray-400 text-sm">模式</label>
+                    <select id="edit-strategy" class="w-full bg-gray-700 text-white rounded p-2 mt-1">
+                        <option value="failover">故障转移</option>
+                        <option value="loadbalance">负载均衡</option>
+                        <option value="latency">最低延迟</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-gray-400 text-sm">IP策略</label>
+                    <input id="edit-ips" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="">
+                </div>
+            </div>
+            <div class="mt-6 flex space-x-3">
+                <button onclick="saveGlobalConfig()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">保存并重启</button>
+                <button onclick="cancelGlobalConfig()" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-500">取消</button>
+            </div>
+            <div id="edit-global-msg" class="mt-2 text-sm hidden"></div>
+        </div>
+    </div>
+
 </body>
 </html>`
 
@@ -582,12 +673,14 @@ setInterval(fetchLogs, 2000);
 // ======================== 热加载配置 ========================
 
 type updateRequest struct {
-    Token    string `json:"token,omitempty"`
-    Forward  string `json:"forward,omitempty"`
-    ConnNum  int    `json:"conn_num,omitempty"`
-    Insecure *bool   `json:"insecure,omitempty"`
-    IPs      string `json:"ips,omitempty"`
-    Strategy string `json:"strategy,omitempty"`
+    Token      string `json:"token,omitempty"`
+    Listen     string `json:"listen,omitempty"`
+    Connections int   `json:"connections,omitempty"`
+    Forward    string `json:"forward,omitempty"`
+    ConnNum    int    `json:"conn_num,omitempty"`
+    Insecure   *bool  `json:"insecure,omitempty"`
+    IPs        string `json:"ips,omitempty"`
+    Strategy   string `json:"strategy,omitempty"`
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -650,11 +743,28 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
         }
         changes = append(changes, "strategy")
     }
+    if req.Listen != "" && req.Listen != tunnelConfig.Listen {
+        log.Printf("[热加载] listen: %s -> %s", tunnelConfig.Listen, req.Listen)
+        tunnelConfig.Listen = req.Listen
+        listenAddr = req.Listen
+        changes = append(changes, "listen")
+        reconnectNeeded = true
+    }
+    if req.Connections > 0 && req.Connections != tunnelConfig.Connections {
+        log.Printf("[热加载] connections: %d -> %d", tunnelConfig.Connections, req.Connections)
+        tunnelConfig.Connections = req.Connections
+        connectionNum = req.Connections
+        changes = append(changes, "connections")
+        reconnectNeeded = true
+    }
 
     msg := "配置已更新"
     if reconnectNeeded {
         msg += "，需要点击重启按钮生效"
     }
+
+    // 保存配置到文件
+    _ = saveConfigToFile()
 
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]interface{}{
