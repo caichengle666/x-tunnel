@@ -206,13 +206,23 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
+	// Raw tokens for editing (unmasked)
+	serverTokensRaw := map[string]string{}
+	for _, srv := range tunnelConfig.Servers {
+		name := srv.Name
+		if name == "" { name = srv.URL }
+		serverTokensRaw[name] = srv.Token
+	}
+	
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"listen":        listenAddr,
 		"forward":       forwardAddr,
 		"token":         displayToken,
 		"server_tokens":  serverTokens,
+		"server_tokens_raw": serverTokensRaw,
 		"insecure":      insecure,
 		"ips":           ips,
+		"connections":   tunnelConfig.Connections,
 	})
 }
 
@@ -290,7 +300,7 @@ const dashboardHTML = `<!DOCTYPE html>
             </div>
             <div>
                 <label class="text-gray-400 text-sm">Token</label>
-                <input id="srv-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="password">
+                <input id="srv-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="text">
             </div>
             <div>
                 <label class="text-gray-400 text-sm">连接数</label>
@@ -358,7 +368,7 @@ function fetchStatus() {
             let html = '';
             data.channels.forEach(ch => {
                 const dot = ch.status === '已连接' ? 'status-online' : 'status-offline';
-                html += '<tr class="border-b border-gray-700/50"><td class="py-2 px-3">#' + ch.ID + '</td><td class="py-2 px-3"><span class="status-dot ' + dot + '"></span> ' + ch.status + '</td><td class="py-2 px-3">' + ch.rtt + '</td></tr>';
+                html += '<tr class="border-b border-gray-700/50"><td class="py-2 px-3">#' + ch.id + '</td><td class="py-2 px-3"><span class="status-dot ' + dot + '"></span> ' + ch.status + '</td><td class="py-2 px-3">' + ch.rtt + '</td></tr>';
             });
             document.getElementById('channels-body').innerHTML = html;
         }
@@ -411,13 +421,22 @@ function renderServers(data) {
 }
 
 function editServer(idx) {
-    fetch('/api/status').then(function(r){return r.json()}).then(function(data){
-        var s = data.servers[idx];
+    Promise.all([
+        fetch('/api/status').then(function(r){return r.json()}),
+        fetch('/api/config').then(function(r){return r.json()})
+    ]).then(function(results){
+        var statusData = results[0];
+        var configData = results[1];
+        var s = statusData.servers[idx];
         if (!s) return;
         document.getElementById('srv-name').value = s.name || '';
         document.getElementById('srv-url').value = s.url || '';
-        document.getElementById('srv-token').value = '';
-        document.getElementById('srv-conn').value = '3';
+        // 从 config 获取真实 token/config
+        var rawTokens = configData.server_tokens_raw || {};
+        var token = rawTokens[s.name] || rawTokens[s.url] || '';
+        document.getElementById('srv-token').value = token;
+        // 从 status 获取权重和通道数（servers 里面有 channels 字段）
+        document.getElementById('srv-conn').value = s.channels || '3';
         document.getElementById('srv-weight').value = '100';
         document.getElementById('srv-msg').textContent = '编辑服务器: ' + (s.name || idx);
         document.getElementById('srv-msg').className = 'mt-2 text-sm text-blue-400';
@@ -510,15 +529,7 @@ function saveServer() {
 
 function fetchConfig() {
     fetch('/api/config').then(r => r.json()).then(data => {
-        document.getElementById('cfg-listen').textContent = data.listen || '--';
-        document.getElementById('cfg-forward').textContent = data.forward || '--';
-        if (data.mode === 'server') {
-            document.getElementById('label-active').textContent = '已连接客户端';
-        } else {
-            document.getElementById('label-active').textContent = '活动通道';
-        }
         document.getElementById('cfg-listen2').textContent = data.listen || '--';
-        document.getElementById('cfg-forward2').textContent = data.forward || '--';
         if (data.server_tokens && Object.keys(data.server_tokens).length > 0) {
             var parts = [];
             for (var name in data.server_tokens) {
@@ -528,8 +539,7 @@ function fetchConfig() {
         } else {
             document.getElementById('cfg-token').textContent = data.token ? data.token : '--';
         }
-        document.getElementById('cfg-conn').textContent = data.conn_num || '--';
-        document.getElementById('cfg-insecure').textContent = data.insecure;
+        document.getElementById('cfg-conn').textContent = data.connections || '--';
         document.getElementById('cfg-ips').textContent = data.ips || '默认';
     }).catch(() => {});
 }
