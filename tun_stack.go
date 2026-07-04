@@ -177,7 +177,7 @@ type gVisorStack struct {
 }
 
 type tunConnHandler struct {
-	pool       *ECHPool
+	pool       *MultiPool
 	blockPorts map[int]struct{}
 	gStack     *stack.Stack
 	physIface  *net.Interface

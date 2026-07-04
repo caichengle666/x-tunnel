@@ -31,7 +31,7 @@ type DNSHandler struct {
 	handler    *tunConnHandler
 	physIface  *net.Interface
 	ipStrategy byte
-	pool       *ECHPool
+	pool       *MultiPool
 
 	dnsMu          sync.Mutex
 	dnsServers     []string

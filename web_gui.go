@@ -114,29 +114,37 @@ func statusJSON() map[string]interface{} {
 	}
 
 	channels := []chInfo{}
-	echPool.wsConnsMu.RLock()
-	for i, sess := range echPool.smuxConns {
-		if sess == nil {
-			continue
+	// 从多服务器中获取第一个可用服务器的通道信息
+	serverPools := echPool.ServerPools()
+	if len(serverPools) > 0 {
+		sp := serverPools[0]
+		sp.mu.RLock()
+		if sp.Pool != nil {
+			for i, sess := range sp.Pool.smuxConns {
+				if sess == nil {
+					continue
+				}
+				status := "已连接"
+				if sess.IsClosed() {
+					status = "已断开"
+				}
+				rtt := atomic.LoadInt64(&sp.Pool.channelRTT[i])
+				rttStr := fmt.Sprintf("%dms", rtt/1e6)
+				if rtt == 0 {
+					rttStr = "--"
+				}
+				channels = append(channels, chInfo{
+					ID:     i + 1,
+					IP:     "",
+					Status: status,
+					RTT:    rttStr,
+				})
+			}
 		}
-		status := "已连接"
-		if sess.IsClosed() {
-			status = "已断开"
-		}
-		rtt := atomic.LoadInt64(&echPool.channelRTT[i])
-		rttStr := fmt.Sprintf("%dms", rtt/1e6)
-		if rtt == 0 {
-			rttStr = "--"
-		}
-		channels = append(channels, chInfo{
-			ID:     i + 1,
-			IP:     "",
-			Status: status,
-			RTT:    rttStr,
-		})
+		sp.mu.RUnlock()
 	}
-	echPool.wsConnsMu.RUnlock()
 
+	result["servers"] = echPool.Servers()
 	result["channels"] = channels
 	result["healthy"] = echPool.HasHealthyChannel()
 
@@ -532,7 +540,12 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
                     }
                 }
             }
-            echPool = NewECHPool(forwardAddr, connectionNum, newIPs, clientID)
+            simpleCfg := &TunnelConfig{
+                Strategy: "failover",
+                Servers:  []ServerConfig{{URL: forwardAddr, Token: token, Connections: connectionNum}},
+            }
+            tunnelConfig = *simpleCfg
+            echPool = NewMultiPool(simpleCfg)
             echPool.Start()
             log.Printf("[热加载] 客户端重启完成，已连接 %s", forwardAddr)
         }

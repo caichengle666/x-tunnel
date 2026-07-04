@@ -75,7 +75,8 @@ var (
 	echList   []byte
 	refreshMu sync.Mutex
 
-	echPool *ECHPool
+	echPool *MultiPool
+	configFile string
 
 	clientID      string
 	udpBlockPorts map[int]struct{}
@@ -112,6 +113,7 @@ func init() {
 	flag.StringVar(&echDomain, "ech", "cloudflare-ech.com", "用于查询 ECH 公钥的域名（仅 wss 模式生效）")
 	flag.BoolVar(&fallback, "fallback", false, "是否禁用 ECH 并回落到普通 TLS 1.3（仅 wss 模式生效，默认 false）")
 	flag.IntVar(&connectionNum, "n", 3, "每个IP建立的WebSocket连接数量")
+	flag.StringVar(&configFile, "config", "", "配置文件路径 (JSON)")
 	flag.StringVar(&ips, "ips", "", "服务端解析目标地址的IP偏好 (仅客户端有效)\n 4: 仅IPv4\n 6: 仅IPv6\n 4,6: IPv4优先\n 6,4: IPv6优先")
 }
 
@@ -236,8 +238,44 @@ func main() {
 	clientID = uuid.NewString()
 	log.Printf("[客户端] 客户端ID: %s", clientID)
 
-	echPool = NewECHPool(forwardAddr, connectionNum, targetIPs, clientID)
-	echPool.Start()
+	// 尝试加载配置文件（多服务器模式）
+	if configFile == "" {
+		configFile = FindConfig()
+	}
+	if configFile != "" {
+		cfg, err := LoadConfig(configFile)
+		if err != nil {
+			log.Printf("[客户端] 加载配置文件失败: %v，使用命令行参数", err)
+		}
+		if err == nil && len(cfg.Servers) > 0 {
+			tunnelConfig = *cfg
+			log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s)",
+				configFile, len(cfg.Servers), cfg.Strategy)
+			echPool = NewMultiPool(&tunnelConfig)
+			echPool.Start()
+		} else {
+			log.Printf("[客户端] 使用命令行参数模式（单服务器）")
+			simpleAddrs := []string{forwardAddr}
+			simpleCfg := &TunnelConfig{
+				Strategy: "failover",
+				Servers:  configToServers(simpleAddrs),
+			}
+			tunnelConfig = *simpleCfg
+			echPool = NewMultiPool(simpleCfg)
+			echPool.Start()
+		}
+	} else {
+		// 单服务器模式（兼容旧版 -f 参数）
+		log.Printf("[客户端] 使用命令行参数模式（单服务器）")
+		simpleAddrs := []string{forwardAddr}
+		simpleCfg := &TunnelConfig{
+			Strategy: "failover",
+			Servers:  configToServers(simpleAddrs),
+		}
+		tunnelConfig = *simpleCfg
+		echPool = NewMultiPool(simpleCfg)
+		echPool.Start()
+	}
 
 	runTUNModeIfNeeded()
 
@@ -2229,7 +2267,7 @@ type UDPAssociation struct {
 	tcpConn       net.Conn
 	udpListener   *net.UDPConn
 	clientUDPAddr *net.UDPAddr
-	pool          *ECHPool
+	pool          *MultiPool
 
 	mu        sync.Mutex
 	closed    bool
