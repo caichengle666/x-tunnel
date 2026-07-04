@@ -89,6 +89,7 @@ func statusJSON() map[string]interface{} {
 	result := map[string]interface{}{
 		"uptime":     "running",
 		"web_listen":  webListen,
+		"strategy":   tunnelConfig.Strategy,
 	}
 
 	// Server mode (no echPool)
@@ -227,64 +228,76 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="text-xl font-mono" id="cfg-listen">--</div>
         </div>
         <div class="bg-gray-800 rounded-lg p-4">
-            <div class="text-gray-400 text-sm">服务器</div>
-            <div class="text-lg font-mono truncate" id="cfg-forward">--</div>
+            <div class="text-gray-400 text-sm">策略</div>
+            <div class="text-lg font-mono" id="cfg-strategy">--</div>
         </div>
+    </div>
+
+    <!-- Server List -->
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold">服务器</h2>
+            <div class="flex items-center space-x-2">
+                <span class="text-gray-400 text-sm">策略:</span>
+                <select id="cfg-strategy-select" class="bg-gray-700 text-white rounded px-2 py-1 text-sm" onchange="changeStrategy()">
+                    <option value="failover">故障转移</option>
+                    <option value="loadbalance">负载均衡</option>
+                    <option value="latency">最低延迟</option>
+                </select>
+                <button onclick="showAddServer()" class="px-3 py-1 bg-green-700 text-white rounded text-sm hover:bg-green-600">+ 添加</button>
+                <button onclick="restartClient()" class="px-3 py-1 bg-yellow-700 text-white rounded text-sm hover:bg-yellow-600">重启</button>
+            </div>
+        </div>
+        <div id="server-list" class="space-y-3">
+            <div class="text-gray-500 text-center py-4">正在加载服务器列表...</div>
+        </div>
+    </div>
+
+    <!-- Add Server Panel -->
+    <div id="add-server-panel" class="bg-gray-800 rounded-lg p-6 mb-8 hidden">
+        <h2 class="text-xl font-semibold mb-4">添加服务器</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="text-gray-400 text-sm">名称</label>
+                <input id="srv-name" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="香港">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">地址 (URL)</label>
+                <input id="srv-url" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="ws://...">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">Token</label>
+                <input id="srv-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="password">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">连接数</label>
+                <input id="srv-conn" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="number" value="3" min="1" max="20">
+            </div>
+            <div>
+                <label class="text-gray-400 text-sm">权重 (负载均衡用)</label>
+                <input id="srv-weight" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="number" value="100" min="1">
+            </div>
+            <div class="flex items-center space-x-2 pt-7">
+                <input id="srv-insecure" type="checkbox" class="w-4 h-4">
+                <label class="text-gray-400 text-sm">跳过证书校验</label>
+            </div>
+        </div>
+        <div class="mt-4 flex space-x-3">
+            <button onclick="saveServer()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">保存</button>
+            <button onclick="cancelAddServer()" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-500">取消</button>
+        </div>
+        <div id="srv-msg" class="mt-2 text-sm hidden"></div>
     </div>
 
     <!-- Config Section -->
     <div class="bg-gray-800 rounded-lg p-6 mb-8">
-        <h2 class="text-xl font-semibold mb-4">配置</h2>
+        <h2 class="text-xl font-semibold mb-4">全局配置</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
             <div><span class="text-gray-400">监听:</span> <span id="cfg-listen2"></span></div>
-            <div><span class="text-gray-400">转发:</span> <span id="cfg-forward2"></span></div>
             <div><span class="text-gray-400">Token:</span> <span id="cfg-token"></span></div>
             <div><span class="text-gray-400">连接数:</span> <span id="cfg-conn"></span></div>
-            <div><span class="text-gray-400">Insecure:</span> <span id="cfg-insecure"></span></div>
             <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips"></span></div>
         </div>
-        <div class="mt-4">
-            <button onclick="showEditPanel()" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">修改配置</button>
-            <button onclick="restartClient()" class="ml-2 px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700">重启客户端</button>
-        </div>
-    </div>
-
-    <!-- 配置编辑面板 -->
-    <div id="edit-panel" class="bg-gray-800 rounded-lg p-6 mb-8 hidden">
-        <h2 class="text-xl font-semibold mb-4">修改配置</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-                <label class="text-gray-400 text-sm">服务器地址 (forward)</label>
-                <input id="edit-forward" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="ws://...">
-            </div>
-            <div>
-                <label class="text-gray-400 text-sm">Token</label>
-                <input id="edit-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="password">
-            </div>
-            <div>
-                <label class="text-gray-400 text-sm">连接数 (conn_num)</label>
-                <input id="edit-conn" class="w-full bg-gray-700 text-white rounded p-2 mt-1" type="number" min="1" max="20">
-            </div>
-            <div>
-                <label class="text-gray-400 text-sm">IP 策略</label>
-                <select id="edit-ips" class="w-full bg-gray-700 text-white rounded p-2 mt-1">
-                    <option value="">默认</option>
-                    <option value="4">仅 IPv4</option>
-                    <option value="6">仅 IPv6</option>
-                    <option value="4,6">IPv4 优先</option>
-                    <option value="6,4">IPv6 优先</option>
-                </select>
-            </div>
-            <div class="flex items-center space-x-2">
-                <input id="edit-insecure" type="checkbox" class="w-4 h-4">
-                <label class="text-gray-400 text-sm">跳过证书校验 (insecure)</label>
-            </div>
-        </div>
-        <div class="mt-4 flex space-x-3">
-            <button onclick="saveConfig()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">保存</button>
-            <button onclick="cancelEdit()" class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-500">取消</button>
-        </div>
-        <div id="edit-msg" class="mt-2 text-sm hidden"></div>
     </div>
 
     <!-- Channels -->
@@ -337,7 +350,112 @@ function fetchStatus() {
             document.getElementById('active-channels').textContent = '0';
             hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400';
         }
+        // Render servers
+        renderServers(data);
     }).catch(() => {});
+}
+
+        if (data.channels) {
+            document.getElementById('active-channels').textContent = data.channels.length;
+            let html = '';
+            data.channels.forEach(ch => {
+                const dot = ch.status === '已连接' ? 'status-online' : 'status-offline';
+                html += '<tr class="border-b border-gray-700/50"><td class="py-2 px-3">#' + ch.ID + '</td><td class="py-2 px-3"><span class="status-dot ' + dot + '"></span> ' + ch.status + '</td><td class="py-2 px-3">' + ch.rtt + '</td></tr>';
+            });
+            document.getElementById('channels-body').innerHTML = html;
+        }
+        const hs = document.getElementById('health-status');
+        if (data.mode === 'server') {
+            document.getElementById('active-channels').textContent = data.clients;
+            hs.textContent = '✓ 正常'; hs.className = 'text-2xl font-bold text-green-400';
+        } else if (data.healthy) {
+            document.getElementById('active-channels').textContent = data.channels ? data.channels.length : 0;
+            hs.textContent = '✓ 健康'; hs.className = 'text-2xl font-bold text-green-400';
+        } else {
+            document.getElementById('active-channels').textContent = '0';
+            hs.textContent = '✗ 异常'; hs.className = 'text-2xl font-bold text-red-400';
+        }
+    }).catch(() => {});
+}
+
+function renderServers(data) {
+    var container = document.getElementById('server-list');
+    if (!container) return;
+    if (!data.servers || data.servers.length === 0) {
+        container.innerHTML = '<div class="text-gray-500 text-center py-4">没有服务器配置</div>';
+        return;
+    }
+    var html = '';
+    data.servers.forEach(function(s, i) {
+        var stateMap = {healthy:'健康', degraded:'降级', dead:'死亡', unknown:'未知'};
+        var stateColor = {healthy:'text-green-400', degraded:'text-yellow-400', dead:'text-red-400', unknown:'text-gray-400'};
+        var dotColor = s.healthy ? 'bg-green-400' : 'bg-red-400';
+        html += '<div class="bg-gray-900 rounded-lg p-4 flex items-center justify-between">' +
+            '<div class="flex items-center space-x-3">' +
+                '<span class="w-2 h-2 rounded-full ' + dotColor + '"></span>' +
+                '<div>' +
+                    '<div class="font-semibold">' + escapeHtml(s.name) + '</div>' +
+                    '<div class="text-xs text-gray-400">' + escapeHtml(s.url) + '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="flex items-center space-x-4 text-sm">' +
+                '<span class="' + (stateColor[s.state] || 'text-gray-400') + '">' + (stateMap[s.state] || s.state) + '</span>' +
+                (s.rtt > 0 ? '<span class="text-gray-400">' + s.rtt + 'ms</span>' : '') +
+                '<span class="text-gray-400">' + s.channels + ' 通道</span>' +
+            '</div>' +
+        '</div>';
+    });
+    container.innerHTML = html;
+}
+
+function changeStrategy() {
+    // Send strategy change via config update
+    var sel = document.getElementById('cfg-strategy-select');
+    if (!sel) return;
+    fetch('/api/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({strategy: sel.value})
+    }).then(function(r) { return r.json(); }).then(function(resp) {
+        if (resp.success && resp.restart) {
+            setTimeout(function() { restartClient(); }, 2000);
+        }
+    }).catch(function() {});
+}
+
+function showAddServer() {
+    document.getElementById('add-server-panel').classList.remove('hidden');
+}
+
+function cancelAddServer() {
+    document.getElementById('add-server-panel').classList.add('hidden');
+}
+
+function saveServer() {
+    var data = {
+        name: document.getElementById('srv-name').value,
+        url: document.getElementById('srv-url').value,
+        token: document.getElementById('srv-token').value || undefined,
+        connections: parseInt(document.getElementById('srv-conn').value) || 3,
+        weight: parseInt(document.getElementById('srv-weight').value) || 100
+    };
+    if (document.getElementById('srv-insecure').checked) data.insecure = true;
+    var msgDiv = document.getElementById('srv-msg');
+    msgDiv.className = 'mt-2 text-sm text-yellow-400';
+    msgDiv.textContent = '正在添加...';
+    msgDiv.classList.remove('hidden');
+    // For now, save strategy update and trigger restart
+    fetch('/api/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+    }).then(function(r) { return r.json(); }).then(function(resp) {
+        msgDiv.className = 'mt-2 text-sm text-green-400';
+        msgDiv.textContent = '请在 config.json 中添加此服务器后重启客户端';
+    }).catch(function() {
+        msgDiv.className = 'mt-2 text-sm text-red-400';
+        msgDiv.textContent = '添加失败';
+    });
 }
 
 function fetchConfig() {
