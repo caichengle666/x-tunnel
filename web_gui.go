@@ -224,6 +224,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"insecure":      insecure,
 		"ips":           ips,
 		"connections":   tunnelConfig.Connections,
+		"strategy":      tunnelConfig.Strategy,
 	})
 }
 
@@ -332,7 +333,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
             <div><span class="text-gray-400">监听:</span> <span id="cfg-listen2">--</span></div>
             <div><span class="text-gray-400">连接数:</span> <span id="cfg-conn">--</span></div>
-            <div><span class="text-gray-400">模式:</span> <span id="cfg-strategy">--</span></div>
+            <div><span class="text-gray-400">模式:</span> <span id="cfg-strategy2">--</span></div>
             <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips">--</span></div>
         </div>
     </div>
@@ -541,19 +542,16 @@ function saveServer() {
 
 function fetchConfig() {
     fetch('/api/config').then(r => r.json()).then(data => {
-        document.getElementById('cfg-listen2').textContent = data.listen || '--';
-        if (data.server_tokens && Object.keys(data.server_tokens).length > 0) {
-            var parts = [];
-            for (var name in data.server_tokens) {
-                parts.push(name + ': ' + data.server_tokens[name]);
-            }
-            document.getElementById('cfg-token').textContent = parts.join(', ');
-        } else {
-            document.getElementById('cfg-token').textContent = data.token ? data.token : '--';
-        }
-        document.getElementById('cfg-conn').textContent = data.connections || '--';
-        document.getElementById('cfg-ips').textContent = data.ips || '默认';
-    }).catch(() => {});
+        var el;
+        el = document.getElementById('cfg-listen2');
+        if (el) el.textContent = data.listen || '--';
+        el = document.getElementById('cfg-conn');
+        if (el) el.textContent = data.connections || '--';
+        el = document.getElementById('cfg-strategy2');
+        if (el) el.textContent = data.strategy || '--';
+        el = document.getElementById('cfg-ips');
+        if (el) el.textContent = data.ips || '默认';
+    }).catch(function(e){ console.error('fetchConfig:', e); });
 }
 
 function fetchLogs() {
