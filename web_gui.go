@@ -62,6 +62,7 @@ func startWebGUI() {
 	mux.HandleFunc("/api/tun/status", handleTunStatus)
 	mux.HandleFunc("/api/geo/upload", handleGeoUpload)
 	mux.HandleFunc("/api/geo/reload", handleGeoReload)
+	mux.HandleFunc("/api/geo/upgrade", handleGeoUpgrade)
 	mux.HandleFunc("/api/restart", handleRestartClient)
 mux.HandleFunc("/api/servers/add", handleAddServer)
 mux.HandleFunc("/api/servers/update", handleUpdateServer)
@@ -393,7 +394,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 <div id="geosite-msg" class="mt-1 text-xs hidden"></div>
             </div>
         </div>
-        <div class="mt-3"><button onclick="reloadGeoData()" class="px-4 py-2 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700">reload routes</button> <span id="geo-reload-msg" class="text-sm hidden"></span></div>
+        <div class="mt-3 flex space-x-3"><button onclick="onlineUpgrade()" class="px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700">&#x1F310; Online Upgrade</button> <button onclick="reloadGeoData()" class="px-4 py-2 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700">Reload</button> <span id="geo-upgrade-msg" class="text-sm text-green-400 self-center hidden"></span> <span id="geo-reload-msg" class="text-sm self-center hidden"></span></div>
     </div>
 
     <!-- Logs -->
@@ -626,6 +627,7 @@ function restartClient() {
 }
 
 function uploadGeoFile(t){var fi=document.getElementById(t+"-file"),m=document.getElementById(t+"-msg");if(!fi.files.length){m.textContent="no file";m.className="mt-1 text-xs text-yellow-400";m.classList.remove("hidden");return}var fd=new FormData();fd.append("file",fi.files[0]);fd.append("type",t);m.textContent="uploading...";m.className="mt-1 text-xs text-blue-400";m.classList.remove("hidden");fetch("/api/geo/upload",{method:"POST",body:fd}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK: "+resp.message:"FAIL: "+resp.message;m.className=resp.success?"mt-1 text-xs text-green-400":"mt-1 text-xs text-red-400"}).catch(function(e){m.textContent="err:"+e;m.className="mt-1 text-xs text-red-400"})}function reloadGeoData(){var m=document.getElementById("geo-reload-msg");m.textContent="reloading...";m.classList.remove("hidden");fetch("/api/geo/reload",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK":"FAIL";setTimeout(function(){m.classList.add("hidden")},4000)}).catch(function(){m.textContent="err"})}function updateGeoStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(d){if(d.geoip)document.getElementById("geoip-status").textContent=d.geoip;if(d.geosite)document.getElementById("geosite-status").textContent=d.geosite}).catch(function(){})}
+function onlineUpgrade(){var m=document.getElementById("geo-upgrade-msg");m.textContent="Downloading...";m.className="text-sm text-blue-400 self-center";m.classList.remove("hidden");fetch("/api/geo/upgrade",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){if(resp.success){m.textContent="OK: "+msgLoaded();m.className="text-sm text-green-400 self-center";updateGeoStatus()}else{m.textContent="FAIL: "+resp.message;m.className="text-sm text-red-400 self-center"}}).catch(function(e){m.textContent="FAIL: "+e;m.className="text-sm text-red-400 self-center"})}function msgLoaded(){return "geo data ready"}
 fetchStatus(); fetchConfig(); fetchLogs();
 setInterval(updateGeoStatus,30000);
 setInterval(fetchStatus, 3000);
@@ -1114,4 +1116,69 @@ func handleGeoReload(w http.ResponseWriter, r *http.Request) {
 	initRules(directStr, proxyStr, defaultRouteStr)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+// ======================== Geo Data Online Upgrade ========================
+var geoUpgradeMirrors = map[string][]string{
+	"geoip": {
+		"https://ghfast.top/https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+		"https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+	},
+	"geosite": {
+		"https://ghfast.top/https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+		"https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+	},
+}
+
+func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+	w.Header().Set("Content-Type", "application/json")
+	wg := &sync.WaitGroup{}
+	results := make(map[string]string)
+	var mu sync.Mutex
+	for geoType, mirrors := range geoUpgradeMirrors {
+		wg.Add(1)
+		go func(gt string, ms []string) {
+			defer wg.Done()
+			filename := gt + ".dat"
+			for _, url := range ms {
+				err := downloadGeoFile(url, filename)
+				if err == nil {
+					mu.Lock(); results[filename] = "updated"; mu.Unlock()
+					return
+				}
+				log.Printf("[Geo] mirror failed %s: %v", url, err)
+			}
+			mu.Lock(); results[filename] = "all mirrors failed"; mu.Unlock()
+		}(geoType, mirrors)
+	}
+	wg.Wait()
+	allOk := true
+	for _, v := range results { if v != "updated" { allOk = false; break } }
+	if allOk {
+		directRules = nil; proxyRules = nil
+		geoIPMatcher = nil; geoSiteMatcher = nil
+		resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
+		loadGeoIP(); loadGeoSite()
+		initRules(directStr, proxyStr, defaultRouteStr)
+		log.Printf("[Geo] upgraded and reloaded")
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": allOk, "results": results})
+}
+
+func downloadGeoFile(url, filename string) error {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil { return err }
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode) }
+	tmpName := filename + ".tmp"
+	f, err := os.Create(tmpName)
+	if err != nil { return err }
+	defer f.Close()
+	n, err := io.Copy(f, resp.Body)
+	if err != nil { os.Remove(tmpName); return err }
+	if n < 1000 { os.Remove(tmpName); return fmt.Errorf("file too small (%d bytes)", n) }
+	f.Close()
+	return os.Rename(tmpName, filename)
 }
