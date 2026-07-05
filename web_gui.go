@@ -60,6 +60,8 @@ func startWebGUI() {
 	mux.HandleFunc("/api/update", handleUpdateConfig)
 	mux.HandleFunc("/api/tun/toggle", handleTunToggle)
 	mux.HandleFunc("/api/tun/status", handleTunStatus)
+	mux.HandleFunc("/api/geo/upload", handleGeoUpload)
+	mux.HandleFunc("/api/geo/reload", handleGeoReload)
 	mux.HandleFunc("/api/restart", handleRestartClient)
 mux.HandleFunc("/api/servers/add", handleAddServer)
 mux.HandleFunc("/api/servers/update", handleUpdateServer)
@@ -156,6 +158,8 @@ func statusJSON() map[string]interface{} {
 	result["servers"] = echPool.Servers()
 	result["channels"] = channels
 	result["healthy"] = echPool.HasHealthyChannel()
+	result["geoip"] = fmt.Sprint(len(geoIPMatcher.cidrs), " cidr")
+	result["geosite"] = fmt.Sprint(len(geoSiteMatcher.domains), " domains")
 
 	return result
 }
@@ -230,6 +234,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"connections":   tunnelConfig.Connections,
 		"strategy":      tunnelConfig.Strategy,
 		"tun_mode":      tunnelConfig.TunMode,
+		"geoip":    fmt.Sprint(len(geoIPMatcher.cidrs), " cidr"),
+		"geosite":  fmt.Sprint(len(geoSiteMatcher.domains), " domains"),
 		"mode": func() string {
 			if echPool == nil && forwardAddr == "" {
 				return "server"
@@ -369,6 +375,25 @@ const dashboardHTML = `<!DOCTYPE html>
                 <tbody id="channels-body"></tbody>
             </table>
         </div>
+    </div>
+
+    <!-- Geo Routing Data -->
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <h2 class="text-xl font-semibold mb-4">GeoIP / GeoSite</h2>
+        <p class="text-gray-400 text-sm mb-4">Upload .dat files — auto hot-reloads routing rules.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-gray-700 rounded p-4">
+                <p class="text-sm font-mono mb-2">geoip.dat <span id="geoip-status" class="text-xs text-gray-400">--</span></p>
+                <input type="file" id="geoip-file" accept=".dat" class="text-xs mr-2"> <button onclick="uploadGeoFile('geoip')" class="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">upload</button>
+                <div id="geoip-msg" class="mt-1 text-xs hidden"></div>
+            </div>
+            <div class="bg-gray-700 rounded p-4">
+                <p class="text-sm font-mono mb-2">geosite.dat <span id="geosite-status" class="text-xs text-gray-400">--</span></p>
+                <input type="file" id="geosite-file" accept=".dat" class="text-xs mr-2"> <button onclick="uploadGeoFile('geosite')" class="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">upload</button>
+                <div id="geosite-msg" class="mt-1 text-xs hidden"></div>
+            </div>
+        </div>
+        <div class="mt-3"><button onclick="reloadGeoData()" class="px-4 py-2 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700">reload routes</button> <span id="geo-reload-msg" class="text-sm hidden"></span></div>
     </div>
 
     <!-- Logs -->
@@ -600,7 +625,9 @@ function restartClient() {
     }).catch(function() {});
 }
 
+function uploadGeoFile(t){var fi=document.getElementById(t+"-file"),m=document.getElementById(t+"-msg");if(!fi.files.length){m.textContent="no file";m.className="mt-1 text-xs text-yellow-400";m.classList.remove("hidden");return}var fd=new FormData();fd.append("file",fi.files[0]);fd.append("type",t);m.textContent="uploading...";m.className="mt-1 text-xs text-blue-400";m.classList.remove("hidden");fetch("/api/geo/upload",{method:"POST",body:fd}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK: "+resp.message:"FAIL: "+resp.message;m.className=resp.success?"mt-1 text-xs text-green-400":"mt-1 text-xs text-red-400"}).catch(function(e){m.textContent="err:"+e;m.className="mt-1 text-xs text-red-400"})}function reloadGeoData(){var m=document.getElementById("geo-reload-msg");m.textContent="reloading...";m.classList.remove("hidden");fetch("/api/geo/reload",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK":"FAIL";setTimeout(function(){m.classList.add("hidden")},4000)}).catch(function(){m.textContent="err"})}function updateGeoStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(d){if(d.geoip)document.getElementById("geoip-status").textContent=d.geoip;if(d.geosite)document.getElementById("geosite-status").textContent=d.geosite}).catch(function(){})}
 fetchStatus(); fetchConfig(); fetchLogs();
+setInterval(updateGeoStatus,30000);
 setInterval(fetchStatus, 3000);
 
 // ======================== 全局配置编辑 ========================
@@ -1033,4 +1060,58 @@ func saveConfigToFile() error {
     if p == "" { p = FindConfig() }
     if p == "" { p = "config.json" }
     return SaveConfig(p, &tunnelConfig)
+}
+
+
+// ======================== Geo Data Upload & Reload ========================
+
+func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+	defer file.Close()
+	geoType := r.FormValue("type")
+	filename := "geoip.dat"
+	if geoType == "geosite" { filename = "geosite.dat" }
+	fl, err := os.Create(filename)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+	defer fl.Close()
+	written, err := io.Copy(fl, file)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+	log.Printf("[Geo] updated %s (%d bytes)", filename, written)
+	directRules = nil; proxyRules = nil
+	geoIPMatcher = nil; geoSiteMatcher = nil
+	resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
+	loadGeoIP(); loadGeoSite()
+	initRules(directStr, proxyStr, defaultRouteStr)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": fmt.Sprintf("%d bytes", written)})
+}
+
+func handleGeoReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+	directRules = nil; proxyRules = nil
+	geoIPMatcher = nil; geoSiteMatcher = nil
+	resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
+	loadGeoIP(); loadGeoSite()
+	initRules(directStr, proxyStr, defaultRouteStr)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
