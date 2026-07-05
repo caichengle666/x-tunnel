@@ -21,11 +21,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const (
-	dnsTypeA    uint16 = 1
-	dnsTypeAAAA uint16 = 28
-)
-
 // DNSHandler manages TUN DNS processing
 type DNSHandler struct {
 	handler    *tunConnHandler
@@ -433,54 +428,6 @@ func extractDNSName(q []byte) string {
 		return "."
 	}
 	return string(p)
-}
-
-func unpackDNSHeader(q []byte) (id uint16, flags uint16, qdcount uint16) {
-	if len(q) < 12 {
-		return
-	}
-	id = binary.BigEndian.Uint16(q[0:2])
-	flags = binary.BigEndian.Uint16(q[2:4])
-	qdcount = binary.BigEndian.Uint16(q[4:6])
-	return
-}
-
-func dnsQuestionType(q []byte) uint16 {
-	if len(q) < 12 {
-		return 0
-	}
-	pos := 12
-	for pos < len(q) {
-		if q[pos] == 0 {
-			pos++
-			break
-		}
-		if q[pos]&0xC0 == 0xC0 {
-			pos += 2
-			break
-		}
-		l := int(q[pos])
-		pos++
-		if pos+l > len(q) {
-			return 0
-		}
-		pos += l
-	}
-	if pos+4 > len(q) {
-		return 0
-	}
-	return binary.BigEndian.Uint16(q[pos : pos+2])
-}
-
-func dnsQuestionTypeName(q []byte) string {
-	switch dnsQuestionType(q) {
-	case dnsTypeA:
-		return "A"
-	case dnsTypeAAAA:
-		return "AAAA"
-	default:
-		return fmt.Sprintf("TYPE%d", dnsQuestionType(q))
-	}
 }
 
 func dnsTypeName(rrType uint16) string {
