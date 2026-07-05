@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	webListen string
-	logBuffer *ring.Ring
-	logMu     sync.RWMutex
+	webListen    string
+	webGUIActive bool
+	logBuffer    *ring.Ring
+	logMu        sync.RWMutex
 
 	reconnectMu     sync.Mutex
 	reconnectNeeded bool
@@ -57,6 +58,7 @@ func startWebGUI() {
 	if webListen != "" && listenAddr != "" {
 		webPort := webListen
 		if strings.Contains(listenAddr, webPort) {
+			webGUIActive = true
 			log.Printf("[Web GUI] 已合并到 WebSocket 端口 %s", webListen)
 			http.HandleFunc("/", handleDashboard)
 			http.HandleFunc("/api/status", handleStatus)

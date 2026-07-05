@@ -216,6 +216,7 @@ func main() {
 		} else {
 			log.Printf("[服务端] 直连模式（未配置SOCKS5代理）")
 		}
+	startWebGUI()
 		runWebSocketServer(listenAddr)
 		return
 	}
@@ -1373,6 +1374,7 @@ func runWebSocketServer(addr string) {
 		go handleWebSocketChannel(ch)
 	})
 	// 根路径返回状态页
+	if !webGUIActive {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -1387,6 +1389,7 @@ func runWebSocketServer(addr string) {
 </div>
 </body></html>`, path, map[bool]string{true: "已设置", false: "未设置"}[token != ""])
 	})
+	}
 
 	if u.Scheme == "wss" {
 		server := &http.Server{Addr: u.Host}
