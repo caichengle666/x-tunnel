@@ -107,7 +107,7 @@ if (action === "create") {
 // ====== READ-ONLY ACTIONS ======
 if (action === "show") { process.stdout.write(read(file)); process.exit(0); }
 
-const content = read(file);
+let content = read(file);
 const lines = content.split("\n");
 
 function printContext(linesArray) {
@@ -198,7 +198,7 @@ if (action === "insert-before" || action === "insert-after") {
   if (!target) { console.error("✗ 缺少 <target>"); process.exit(1); }
   const text = resolveArg(textRaw);
   if (text === undefined || text === null) { console.error("✗ 缺少 <text>"); process.exit(1); }
-  const matched = lines.filter(l => l.line.includes(target));
+  const matched = lines.map((l,i)=>({line:l,i})).filter(o => o.line && o.line.includes(target));
   if (matched.length === 0) { console.error("✗ 未找到包含 \"" + target + "\" 的行"); process.exit(1); }
   const insertion = action === "insert-before" ? text + "\n" : text + "\n";
   const sorted = matched.sort((a, b) => action === "insert-before" ? b.i - a.i : a.i - b.i);
@@ -232,12 +232,12 @@ if (action === "insert-line") {
 if (action === "delete") {
   const [target] = args;
   if (!target) { console.error("✗ 缺少 <target>"); process.exit(1); }
-  const toDelete = lines.filter(l => l.line.includes(target));
+  const toDelete = lines.map((l,i)=>({l,i})).filter(o => o.l && o.l.includes(target));
   if (toDelete.length === 0) { console.error("✗ 未找到包含 \"" + target + "\" 的行"); process.exit(1); }
   const deleteSet = new Set(toDelete.map(m => m.i));
   const result = lines.filter(l => !deleteSet.has(l.i)).map(l => l.line).join("\n");
   write(file, result);
-  console.error("  删除了 " + toDelete.length + " 行");
+  console.error("  删除了 " + deleteSet.size + " 行");
   process.exit(0);
 }
 

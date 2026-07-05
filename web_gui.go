@@ -185,8 +185,16 @@ func statusJSON() map[string]interface{} {
 	result["servers"] = echPool.Servers()
 	result["channels"] = channels
 	result["healthy"] = echPool.HasHealthyChannel()
-	result["geoip"] = fmt.Sprint(len(geoIPMatcher.cidrs), " cidr")
-	result["geosite"] = fmt.Sprint(len(geoSiteMatcher.domains), " domains")
+	geoIPCount := 0
+	if geoIPMatcher != nil {
+		geoIPCount = len(geoIPMatcher.cidrs)
+	}
+	geoSiteCount := 0
+	if geoSiteMatcher != nil {
+		geoSiteCount = len(geoSiteMatcher.domains)
+	}
+	result["geoip"] = fmt.Sprint(geoIPCount, " cidr")
+	result["geosite"] = fmt.Sprint(geoSiteCount, " domains")
 
 	return result
 }
@@ -226,7 +234,27 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		displayToken = "***"
 	}
 
-	// Server tokens (for multi-server mode)
+	// Server mode: return minimal config (no client-only vars)
+	if echPool == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"listen":            listenAddr,
+			"forward":           forwardAddr,
+			"token":             displayToken,
+			"server_tokens":     map[string]string{},
+			"server_tokens_raw": map[string]string{},
+			"insecure":          insecure,
+			"ips":               ips,
+			"connections":       0,
+			"strategy":          "failover",
+			"tun_mode":          false,
+			"geoip":             "0 cidr",
+			"geosite":           "0 domains",
+			"mode":              "server",
+		})
+		return
+	}
+
+	// Client mode: full config with server tokens
 	serverTokens := map[string]string{}
 	for _, srv := range tunnelConfig.Servers {
 		name := srv.Name
@@ -254,6 +282,15 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		serverTokensRaw[name] = srv.Token
 	}
 
+	geoIPCount := 0
+	if geoIPMatcher != nil {
+		geoIPCount = len(geoIPMatcher.cidrs)
+	}
+	geoSiteCount := 0
+	if geoSiteMatcher != nil {
+		geoSiteCount = len(geoSiteMatcher.domains)
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"listen":            listenAddr,
 		"forward":           forwardAddr,
@@ -265,14 +302,9 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"connections":       tunnelConfig.Connections,
 		"strategy":          tunnelConfig.Strategy,
 		"tun_mode":          tunnelConfig.TunMode,
-		"geoip":             fmt.Sprint(len(geoIPMatcher.cidrs), " cidr"),
-		"geosite":           fmt.Sprint(len(geoSiteMatcher.domains), " domains"),
-		"mode": func() string {
-			if echPool == nil && forwardAddr == "" {
-				return "server"
-			}
-			return "client"
-		}(),
+		"geoip":             fmt.Sprint(geoIPCount, " cidr"),
+		"geosite":           fmt.Sprint(geoSiteCount, " domains"),
+		"mode":              "client",
 	})
 }
 
