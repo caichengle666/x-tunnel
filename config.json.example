@@ -1,0 +1,16 @@
+﻿{
+  "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:30001",
+  "tun_mode": false,
+  "strategy": "failover",
+  "connections": 6,
+  "servers": [
+    {
+      "name": "server",
+      "url": "ws://your-server:port/tunnel",
+      "token": "your-token",
+      "connections": 3,
+      "weight": 100
+    }
+  ],
+  "web_listen": ":9090"
+}
