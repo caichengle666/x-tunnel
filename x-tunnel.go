@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bufio"
@@ -301,6 +301,9 @@ func main() {
 			tunnelConfig = *cfg
 			if !flagSet["tun"] {
 				tunMode = cfg.TunMode
+			}
+			if tunMode && strings.TrimSpace(ips) == "" {
+				ipStrategy = IPStrategyIPv4Only
 			}
 			if !flagSet["web"] && cfg.WebListen != "" {
 				webListen = cfg.WebListen

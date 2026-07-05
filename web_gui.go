@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"container/ring"
@@ -23,6 +23,9 @@ var (
 
 	reconnectMu     sync.Mutex
 	reconnectNeeded bool
+
+	// tunnelConfigMu guards concurrent access to tunnelConfig.Servers
+	tunnelConfigMu sync.RWMutex
 )
 
 const logRingSize = 500
@@ -225,6 +228,8 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	tunnelConfigMu.RLock()
+	defer tunnelConfigMu.RUnlock()
 
 	// Global token display (masked)
 	displayToken := ""
@@ -808,6 +813,10 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
 		return
 	}
+	if echPool == nil {
+		http.Error(w, "服务端模式不支持此操作", http.StatusForbidden)
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "读取失败", http.StatusBadRequest)
@@ -852,6 +861,9 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[热加载] ips: %s -> %s", ips, req.IPs)
 		ips = req.IPs
 		ipStrategy = parseIPStrategy(ips)
+		tunnelConfigMu.Lock()
+		tunnelConfig.IPStrategy = req.IPs
+		tunnelConfigMu.Unlock()
 		changes = append(changes, "ips")
 		reconnectNeeded = true
 	}
@@ -927,7 +939,10 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 		stopAllListeners()
 
 		// Rebuild from current tunnelConfig (supports multi-server)
-		if len(tunnelConfig.Servers) > 0 {
+		tunnelConfigMu.RLock()
+		hasServers := len(tunnelConfig.Servers) > 0
+		tunnelConfigMu.RUnlock()
+		if hasServers {
 			for i := range tunnelConfig.Servers {
 				if tunnelConfig.Servers[i].Name == "" {
 					tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
@@ -998,7 +1013,9 @@ func handleAddServer(w http.ResponseWriter, r *http.Request) {
 	if srv.Weight <= 0 {
 		srv.Weight = 100
 	}
+	tunnelConfigMu.Lock()
 	tunnelConfig.Servers = append(tunnelConfig.Servers, srv)
+	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
@@ -1036,7 +1053,9 @@ func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	if req.Server.Weight <= 0 {
 		req.Server.Weight = 100
 	}
+	tunnelConfigMu.Lock()
 	tunnelConfig.Servers[req.Index] = req.Server
+	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
@@ -1067,7 +1086,9 @@ func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad index", 400)
 		return
 	}
+	tunnelConfigMu.Lock()
 	tunnelConfig.Servers = append(tunnelConfig.Servers[:req.Index], tunnelConfig.Servers[req.Index+1:]...)
+	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
@@ -1092,7 +1113,9 @@ func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	if len(body) > 0 {
 		var newCfg TunnelConfig
 		if err := json.Unmarshal(body, &newCfg); err == nil {
+			tunnelConfigMu.Lock()
 			tunnelConfig = newCfg
+			tunnelConfigMu.Unlock()
 		}
 	}
 	if err := saveConfigToFile(); err != nil {
