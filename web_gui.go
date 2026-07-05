@@ -1,18 +1,18 @@
-﻿package main
+package main
 
 import (
 	"container/ring"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"flag"
-	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
 )
 
 var (
@@ -52,6 +52,31 @@ func startWebGUI() {
 	logBuffer = ring.New(logRingSize)
 	log.SetOutput(io.MultiWriter(logWriter{}, os.Stderr))
 
+	// 服务端模式：web 与 WebSocket 共享端口
+	// 如果 webListen 的端口号与 listenAddr 一致，则共用同一个 HTTP 服务
+	if webListen != "" && listenAddr != "" {
+		webPort := webListen
+		if strings.Contains(listenAddr, webPort) {
+			log.Printf("[Web GUI] 已合并到 WebSocket 端口 %s", webListen)
+			http.HandleFunc("/", handleDashboard)
+			http.HandleFunc("/api/status", handleStatus)
+			http.HandleFunc("/api/logs", handleLogs)
+			http.HandleFunc("/api/config", handleConfig)
+			http.HandleFunc("/api/update", handleUpdateConfig)
+			http.HandleFunc("/api/tun/toggle", handleTunToggle)
+			http.HandleFunc("/api/tun/status", handleTunStatus)
+			http.HandleFunc("/api/geo/upload", handleGeoUpload)
+			http.HandleFunc("/api/geo/reload", handleGeoReload)
+			http.HandleFunc("/api/geo/upgrade", handleGeoUpgrade)
+			http.HandleFunc("/api/restart", handleRestartClient)
+			http.HandleFunc("/api/servers/add", handleAddServer)
+			http.HandleFunc("/api/servers/update", handleUpdateServer)
+			http.HandleFunc("/api/servers/delete", handleDeleteServer)
+			http.HandleFunc("/api/saveconfig", handleSaveConfig)
+			return
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleDashboard)
 	mux.HandleFunc("/api/status", handleStatus)
@@ -64,10 +89,10 @@ func startWebGUI() {
 	mux.HandleFunc("/api/geo/reload", handleGeoReload)
 	mux.HandleFunc("/api/geo/upgrade", handleGeoUpgrade)
 	mux.HandleFunc("/api/restart", handleRestartClient)
-mux.HandleFunc("/api/servers/add", handleAddServer)
-mux.HandleFunc("/api/servers/update", handleUpdateServer)
-mux.HandleFunc("/api/servers/delete", handleDeleteServer)
-mux.HandleFunc("/api/saveconfig", handleSaveConfig)
+	mux.HandleFunc("/api/servers/add", handleAddServer)
+	mux.HandleFunc("/api/servers/update", handleUpdateServer)
+	mux.HandleFunc("/api/servers/delete", handleDeleteServer)
+	mux.HandleFunc("/api/saveconfig", handleSaveConfig)
 
 	go func() {
 		log.Printf("[Web GUI] 监听 %s", webListen)
@@ -76,7 +101,6 @@ mux.HandleFunc("/api/saveconfig", handleSaveConfig)
 		}
 	}()
 }
-
 
 func countActiveClients() int {
 	count := 0
@@ -97,32 +121,32 @@ func countActiveClients() int {
 func statusJSON() map[string]interface{} {
 	result := map[string]interface{}{
 		"uptime":     "running",
-		"web_listen":  webListen,
+		"web_listen": webListen,
 		"strategy":   tunnelConfig.Strategy,
 	}
-    result["tun_mode"] = tunMode
+	result["tun_mode"] = tunMode
 
 	// Server mode (no echPool)
 	if echPool == nil {
-		result["mode"]     = "server"
-		result["listen"]   = listenAddr
-		result["tunnel"]   = "服务端模式"
-		result["healthy"]  = true
-		result["clients"]  = countActiveClients()
+		result["mode"] = "server"
+		result["listen"] = listenAddr
+		result["tunnel"] = "服务端模式"
+		result["healthy"] = true
+		result["clients"] = countActiveClients()
 		return result
 	}
 
 	// Client mode
-	result["mode"]     = "client"
-	result["listen"]   = listenAddr
-	result["server"]   = forwardAddr
+	result["mode"] = "client"
+	result["listen"] = listenAddr
+	result["server"] = forwardAddr
 	result["client_id"] = clientID
 
 	type chInfo struct {
-		ID       int    `json:"id"`
-		IP       string `json:"ip"`
-		Status   string `json:"status"`
-		RTT      string `json:"rtt"`
+		ID     int    `json:"id"`
+		IP     string `json:"ip"`
+		Status string `json:"status"`
+		RTT    string `json:"rtt"`
 	}
 
 	channels := []chInfo{}
@@ -191,7 +215,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// Global token display (masked)
 	displayToken := ""
 	if len(token) > 4 {
@@ -199,12 +223,14 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	} else if token != "" {
 		displayToken = "***"
 	}
-	
+
 	// Server tokens (for multi-server mode)
 	serverTokens := map[string]string{}
 	for _, srv := range tunnelConfig.Servers {
 		name := srv.Name
-		if name == "" { name = srv.URL }
+		if name == "" {
+			name = srv.URL
+		}
 		if srv.Token != "" {
 			if len(srv.Token) > 4 {
 				serverTokens[name] = "***" + srv.Token[len(srv.Token)-4:]
@@ -215,28 +241,30 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			serverTokens[name] = displayToken
 		}
 	}
-	
+
 	// Raw tokens for editing (unmasked)
 	serverTokensRaw := map[string]string{}
 	for _, srv := range tunnelConfig.Servers {
 		name := srv.Name
-		if name == "" { name = srv.URL }
+		if name == "" {
+			name = srv.URL
+		}
 		serverTokensRaw[name] = srv.Token
 	}
-	
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"listen":        listenAddr,
-		"forward":       forwardAddr,
-		"token":         displayToken,
-		"server_tokens":  serverTokens,
+		"listen":            listenAddr,
+		"forward":           forwardAddr,
+		"token":             displayToken,
+		"server_tokens":     serverTokens,
 		"server_tokens_raw": serverTokensRaw,
-		"insecure":      insecure,
-		"ips":           ips,
-		"connections":   tunnelConfig.Connections,
-		"strategy":      tunnelConfig.Strategy,
-		"tun_mode":      tunnelConfig.TunMode,
-		"geoip":    fmt.Sprint(len(geoIPMatcher.cidrs), " cidr"),
-		"geosite":  fmt.Sprint(len(geoSiteMatcher.domains), " domains"),
+		"insecure":          insecure,
+		"ips":               ips,
+		"connections":       tunnelConfig.Connections,
+		"strategy":          tunnelConfig.Strategy,
+		"tun_mode":          tunnelConfig.TunMode,
+		"geoip":             fmt.Sprint(len(geoIPMatcher.cidrs), " cidr"),
+		"geosite":           fmt.Sprint(len(geoSiteMatcher.domains), " domains"),
 		"mode": func() string {
 			if echPool == nil && forwardAddr == "" {
 				return "server"
@@ -727,281 +755,338 @@ setInterval(fetchLogs, 2000);
 </body>
 </html>`
 
-
 // ======================== 热加载配置 ========================
 
 type updateRequest struct {
-    Token      string `json:"token,omitempty"`
-    Listen     string `json:"listen,omitempty"`
-    Connections int   `json:"connections,omitempty"`
-    Forward    string `json:"forward,omitempty"`
-    ConnNum    int    `json:"conn_num,omitempty"`
-    Insecure   *bool  `json:"insecure,omitempty"`
-    IPs        string `json:"ips,omitempty"`
-    Strategy   string `json:"strategy,omitempty"`
-    TunMode    *bool  `json:"tun_mode,omitempty"`
+	Token       string `json:"token,omitempty"`
+	Listen      string `json:"listen,omitempty"`
+	Connections int    `json:"connections,omitempty"`
+	Forward     string `json:"forward,omitempty"`
+	ConnNum     int    `json:"conn_num,omitempty"`
+	Insecure    *bool  `json:"insecure,omitempty"`
+	IPs         string `json:"ips,omitempty"`
+	Strategy    string `json:"strategy,omitempty"`
+	TunMode     *bool  `json:"tun_mode,omitempty"`
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" {
-        http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
-        return
-    }
-    body, err := io.ReadAll(r.Body)
-    if err != nil {
-        http.Error(w, "读取失败", http.StatusBadRequest)
-        return
-    }
-    var req updateRequest
-    if err := json.Unmarshal(body, &req); err != nil {
-        http.Error(w, "JSON 解析失败: "+err.Error(), http.StatusBadRequest)
-        return
-    }
+	if r.Method != "POST" {
+		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "读取失败", http.StatusBadRequest)
+		return
+	}
+	var req updateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "JSON 解析失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
-    reconnectMu.Lock()
-    defer reconnectMu.Unlock()
+	reconnectMu.Lock()
+	defer reconnectMu.Unlock()
 
-    changes := []string{}
+	changes := []string{}
 
-    if req.Token != "" && req.Token != token {
-        log.Printf("[热加载] token 已更新")
-        token = req.Token
-        changes = append(changes, "token")
-        reconnectNeeded = true
-    }
-    if req.Forward != "" && req.Forward != forwardAddr {
-        log.Printf("[热加载] forward: %s -> %s", forwardAddr, req.Forward)
-        forwardAddr = req.Forward
-        changes = append(changes, "forward")
-        reconnectNeeded = true
-    }
-    if req.ConnNum > 0 && req.ConnNum != connectionNum {
-        log.Printf("[热加载] conn_num: %d -> %d", connectionNum, req.ConnNum)
-        connectionNum = req.ConnNum
-        changes = append(changes, "conn_num")
-        reconnectNeeded = true
-    }
-    if req.Insecure != nil && *req.Insecure != insecure {
-        log.Printf("[热加载] insecure: %t -> %t", insecure, *req.Insecure)
-        insecure = *req.Insecure
-        changes = append(changes, "insecure")
-        reconnectNeeded = true
-    }
-    if req.IPs != "" && req.IPs != ips {
-        log.Printf("[热加载] ips: %s -> %s", ips, req.IPs)
-        ips = req.IPs
-        ipStrategy = parseIPStrategy(ips)
-        changes = append(changes, "ips")
-        reconnectNeeded = true
-    }
-    if req.Strategy != "" && req.Strategy != tunnelConfig.Strategy {
-        log.Printf("[热加载] strategy: %s -> %s", tunnelConfig.Strategy, req.Strategy)
-        tunnelConfig.Strategy = req.Strategy
-        if echPool != nil {
-            echPool.strategy = req.Strategy
-        }
-        changes = append(changes, "strategy")
-    }
-    if req.TunMode != nil && *req.TunMode != tunnelConfig.TunMode {
-        log.Printf("[热加载] tun_mode: %t -> %t", tunnelConfig.TunMode, *req.TunMode)
-        tunnelConfig.TunMode = *req.TunMode
-        tunMode = *req.TunMode
-        changes = append(changes, "tun_mode")
-    }
-    if req.Listen != "" && req.Listen != tunnelConfig.Listen {
-        log.Printf("[热加载] listen: %s -> %s", tunnelConfig.Listen, req.Listen)
-        tunnelConfig.Listen = req.Listen
-        listenAddr = req.Listen
-        changes = append(changes, "listen")
-        reconnectNeeded = true
-    }
-    if req.Connections > 0 && req.Connections != tunnelConfig.Connections {
-        log.Printf("[热加载] connections: %d -> %d", tunnelConfig.Connections, req.Connections)
-        tunnelConfig.Connections = req.Connections
-        connectionNum = req.Connections
-        changes = append(changes, "connections")
-        reconnectNeeded = true
-    }
+	if req.Token != "" && req.Token != token {
+		log.Printf("[热加载] token 已更新")
+		token = req.Token
+		changes = append(changes, "token")
+		reconnectNeeded = true
+	}
+	if req.Forward != "" && req.Forward != forwardAddr {
+		log.Printf("[热加载] forward: %s -> %s", forwardAddr, req.Forward)
+		forwardAddr = req.Forward
+		changes = append(changes, "forward")
+		reconnectNeeded = true
+	}
+	if req.ConnNum > 0 && req.ConnNum != connectionNum {
+		log.Printf("[热加载] conn_num: %d -> %d", connectionNum, req.ConnNum)
+		connectionNum = req.ConnNum
+		changes = append(changes, "conn_num")
+		reconnectNeeded = true
+	}
+	if req.Insecure != nil && *req.Insecure != insecure {
+		log.Printf("[热加载] insecure: %t -> %t", insecure, *req.Insecure)
+		insecure = *req.Insecure
+		changes = append(changes, "insecure")
+		reconnectNeeded = true
+	}
+	if req.IPs != "" && req.IPs != ips {
+		log.Printf("[热加载] ips: %s -> %s", ips, req.IPs)
+		ips = req.IPs
+		ipStrategy = parseIPStrategy(ips)
+		changes = append(changes, "ips")
+		reconnectNeeded = true
+	}
+	if req.Strategy != "" && req.Strategy != tunnelConfig.Strategy {
+		log.Printf("[热加载] strategy: %s -> %s", tunnelConfig.Strategy, req.Strategy)
+		tunnelConfig.Strategy = req.Strategy
+		if echPool != nil {
+			echPool.strategy = req.Strategy
+		}
+		changes = append(changes, "strategy")
+	}
+	if req.TunMode != nil && *req.TunMode != tunnelConfig.TunMode {
+		log.Printf("[热加载] tun_mode: %t -> %t", tunnelConfig.TunMode, *req.TunMode)
+		tunnelConfig.TunMode = *req.TunMode
+		tunMode = *req.TunMode
+		changes = append(changes, "tun_mode")
+	}
+	if req.Listen != "" && req.Listen != tunnelConfig.Listen {
+		log.Printf("[热加载] listen: %s -> %s", tunnelConfig.Listen, req.Listen)
+		tunnelConfig.Listen = req.Listen
+		listenAddr = req.Listen
+		changes = append(changes, "listen")
+		reconnectNeeded = true
+	}
+	if req.Connections > 0 && req.Connections != tunnelConfig.Connections {
+		log.Printf("[热加载] connections: %d -> %d", tunnelConfig.Connections, req.Connections)
+		tunnelConfig.Connections = req.Connections
+		connectionNum = req.Connections
+		changes = append(changes, "connections")
+		reconnectNeeded = true
+	}
 
-    msg := "配置已更新"
-    if reconnectNeeded {
-        msg += "，需要点击重启按钮生效"
-    }
+	msg := "配置已更新"
+	if reconnectNeeded {
+		msg += "，需要点击重启按钮生效"
+	}
 
-    // 保存配置到文件
-    _ = saveConfigToFile()
+	// 保存配置到文件
+	_ = saveConfigToFile()
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{
-        "success": true,
-        "changes": changes,
-        "restart": reconnectNeeded,
-        "message": msg,
-    })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"changes": changes,
+		"restart": reconnectNeeded,
+		"message": msg,
+	})
 }
+
 // copyTunConfigAndStart copies current config to a TunConfig and calls runTUNModeIfNeeded
 func copyTunConfigAndStart() {
 	runTUNModeIfNeeded()
 }
 
 func handleRestartClient(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" {
-        http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
-        return
-    }
+	if r.Method != "POST" {
+		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
 
-    go func() {
-        log.Printf("[热加载] 正在重启客户端...")
-        reconnectMu.Lock()
-        reconnectNeeded = false
-        reconnectMu.Unlock()
+	go func() {
+		log.Printf("[热加载] 正在重启客户端...")
+		reconnectMu.Lock()
+		reconnectNeeded = false
+		reconnectMu.Unlock()
 
-        time.Sleep(1 * time.Second)
+		time.Sleep(1 * time.Second)
 
-        if echPool != nil {
-            echPool.Stop()
-            echPool = nil
-        }
-        stopAllListeners()
+		if echPool != nil {
+			echPool.Stop()
+			echPool = nil
+		}
+		stopAllListeners()
 
-        // Rebuild from current tunnelConfig (supports multi-server)
-        if len(tunnelConfig.Servers) > 0 {
-            for i := range tunnelConfig.Servers {
-                if tunnelConfig.Servers[i].Name == "" {
-                    tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
-                }
-                if tunnelConfig.Servers[i].Connections <= 0 {
-                    tunnelConfig.Servers[i].Connections = tunnelConfig.Connections
-                }
-                if tunnelConfig.Servers[i].Connections <= 0 {
-                    tunnelConfig.Servers[i].Connections = 3
-                }
-            }
-            echPool = NewMultiPool(&tunnelConfig)
-            echPool.Start()
-            startListeners()
-            if tunMode {
-                go runTUNModeIfNeeded()
-            }
-            serverNames := make([]string, 0, len(tunnelConfig.Servers))
-            for _, s := range tunnelConfig.Servers {
-                serverNames = append(serverNames, s.Name)
-            }
-            log.Printf("[热加载] 客户端重启完成，%d 台服务器: %v", len(tunnelConfig.Servers), serverNames)
-        } else if forwardAddr != "" {
-            tunnelConfig.Servers = []ServerConfig{{Name: forwardAddr, URL: forwardAddr, Token: token, Connections: connectionNum}}
-            if tunnelConfig.Strategy == "" {
-                tunnelConfig.Strategy = "failover"
-            }
-            echPool = NewMultiPool(&tunnelConfig)
-            echPool.Start()
-            if tunMode {
-                go runTUNModeIfNeeded()
-            }
-            log.Printf("[热加载] 客户端重启完成（单服务器模式）: %s", forwardAddr)
-        }
-    }()
+		// Rebuild from current tunnelConfig (supports multi-server)
+		if len(tunnelConfig.Servers) > 0 {
+			for i := range tunnelConfig.Servers {
+				if tunnelConfig.Servers[i].Name == "" {
+					tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
+				}
+				if tunnelConfig.Servers[i].Connections <= 0 {
+					tunnelConfig.Servers[i].Connections = tunnelConfig.Connections
+				}
+				if tunnelConfig.Servers[i].Connections <= 0 {
+					tunnelConfig.Servers[i].Connections = 3
+				}
+			}
+			echPool = NewMultiPool(&tunnelConfig)
+			echPool.Start()
+			startListeners()
+			if tunMode {
+				go runTUNModeIfNeeded()
+			}
+			serverNames := make([]string, 0, len(tunnelConfig.Servers))
+			for _, s := range tunnelConfig.Servers {
+				serverNames = append(serverNames, s.Name)
+			}
+			log.Printf("[热加载] 客户端重启完成，%d 台服务器: %v", len(tunnelConfig.Servers), serverNames)
+		} else if forwardAddr != "" {
+			tunnelConfig.Servers = []ServerConfig{{Name: forwardAddr, URL: forwardAddr, Token: token, Connections: connectionNum}}
+			if tunnelConfig.Strategy == "" {
+				tunnelConfig.Strategy = "failover"
+			}
+			echPool = NewMultiPool(&tunnelConfig)
+			echPool.Start()
+			if tunMode {
+				go runTUNModeIfNeeded()
+			}
+			log.Printf("[热加载] 客户端重启完成（单服务器模式）: %s", forwardAddr)
+		}
+	}()
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{
-        "success": true,
-        "message": "客户端正在重启...",
-    })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "客户端正在重启...",
+	})
 }
-
 
 // ======================== Multi-Server Management ========================
 
 func handleAddServer(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
-    body, err := io.ReadAll(r.Body)
-    if err != nil { http.Error(w, "read error", 400); return }
-    var srv ServerConfig
-    if err := json.Unmarshal(body, &srv); err != nil { http.Error(w, "json error", 400); return }
-    if srv.URL == "" { http.Error(w, "URL required", 400); return }
-    if srv.Connections <= 0 { srv.Connections = 3 }
-    if srv.Weight <= 0 { srv.Weight = 100 }
-    tunnelConfig.Servers = append(tunnelConfig.Servers, srv)
-    _ = saveConfigToFile()
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-    go func() {
-        time.Sleep(500 * time.Millisecond)
-        if echPool != nil { echPool.Stop() }
-        echPool = NewMultiPool(&tunnelConfig)
-        echPool.Start()
-    }()
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read error", 400)
+		return
+	}
+	var srv ServerConfig
+	if err := json.Unmarshal(body, &srv); err != nil {
+		http.Error(w, "json error", 400)
+		return
+	}
+	if srv.URL == "" {
+		http.Error(w, "URL required", 400)
+		return
+	}
+	if srv.Connections <= 0 {
+		srv.Connections = 3
+	}
+	if srv.Weight <= 0 {
+		srv.Weight = 100
+	}
+	tunnelConfig.Servers = append(tunnelConfig.Servers, srv)
+	_ = saveConfigToFile()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if echPool != nil {
+			echPool.Stop()
+		}
+		echPool = NewMultiPool(&tunnelConfig)
+		echPool.Start()
+	}()
 }
 
 func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
-    body, _ := io.ReadAll(r.Body)
-    var req struct {
-        Index  int          `json:"index"`
-        Server ServerConfig `json:"server"`
-    }
-    if err := json.Unmarshal(body, &req); err != nil { http.Error(w, "json error", 400); return }
-    if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) { http.Error(w, "bad index", 400); return }
-    if req.Server.Connections <= 0 { req.Server.Connections = 3 }
-    if req.Server.Weight <= 0 { req.Server.Weight = 100 }
-    tunnelConfig.Servers[req.Index] = req.Server
-    _ = saveConfigToFile()
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-    go func() {
-        time.Sleep(500 * time.Millisecond)
-        if echPool != nil { echPool.Stop() }
-        echPool = NewMultiPool(&tunnelConfig)
-        echPool.Start()
-    }()
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Index  int          `json:"index"`
+		Server ServerConfig `json:"server"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "json error", 400)
+		return
+	}
+	if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) {
+		http.Error(w, "bad index", 400)
+		return
+	}
+	if req.Server.Connections <= 0 {
+		req.Server.Connections = 3
+	}
+	if req.Server.Weight <= 0 {
+		req.Server.Weight = 100
+	}
+	tunnelConfig.Servers[req.Index] = req.Server
+	_ = saveConfigToFile()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if echPool != nil {
+			echPool.Stop()
+		}
+		echPool = NewMultiPool(&tunnelConfig)
+		echPool.Start()
+	}()
 }
 
 func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
-    body, _ := io.ReadAll(r.Body)
-    var req struct { Index int `json:"index"` }
-    if err := json.Unmarshal(body, &req); err != nil { http.Error(w, "json error", 400); return }
-    if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) { http.Error(w, "bad index", 400); return }
-    tunnelConfig.Servers = append(tunnelConfig.Servers[:req.Index], tunnelConfig.Servers[req.Index+1:]...)
-    _ = saveConfigToFile()
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-    go func() {
-        time.Sleep(500 * time.Millisecond)
-        if echPool != nil { echPool.Stop() }
-        if len(tunnelConfig.Servers) > 0 {
-            echPool = NewMultiPool(&tunnelConfig)
-            echPool.Start()
-        }
-    }()
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "json error", 400)
+		return
+	}
+	if req.Index < 0 || req.Index >= len(tunnelConfig.Servers) {
+		http.Error(w, "bad index", 400)
+		return
+	}
+	tunnelConfig.Servers = append(tunnelConfig.Servers[:req.Index], tunnelConfig.Servers[req.Index+1:]...)
+	_ = saveConfigToFile()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if echPool != nil {
+			echPool.Stop()
+		}
+		if len(tunnelConfig.Servers) > 0 {
+			echPool = NewMultiPool(&tunnelConfig)
+			echPool.Start()
+		}
+	}()
 }
 
 func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "POST" { http.Error(w, "POST only", 405); return }
-    body, _ := io.ReadAll(r.Body)
-    if len(body) > 0 {
-        var newCfg TunnelConfig
-        if err := json.Unmarshal(body, &newCfg); err == nil {
-            tunnelConfig = newCfg
-        }
-    }
-    if err := saveConfigToFile(); err != nil { http.Error(w, "save error", 500); return }
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "saved"})
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	if len(body) > 0 {
+		var newCfg TunnelConfig
+		if err := json.Unmarshal(body, &newCfg); err == nil {
+			tunnelConfig = newCfg
+		}
+	}
+	if err := saveConfigToFile(); err != nil {
+		http.Error(w, "save error", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "saved"})
 }
 
 func saveConfigToFile() error {
-    p := configFile
-    if p == "" { p = FindConfig() }
-    if p == "" { p = "config.json" }
-    return SaveConfig(p, &tunnelConfig)
+	p := configFile
+	if p == "" {
+		p = FindConfig()
+	}
+	if p == "" {
+		p = "config.json"
+	}
+	return SaveConfig(p, &tunnelConfig)
 }
-
 
 // ======================== Geo Data Upload & Reload ========================
 
 func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
 	if err := r.ParseMultipartForm(100 << 20); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
@@ -1016,7 +1101,9 @@ func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	geoType := r.FormValue("type")
 	filename := "geoip.dat"
-	if geoType == "geosite" { filename = "geosite.dat" }
+	if geoType == "geosite" {
+		filename = "geosite.dat"
+	}
 	fl, err := os.Create(filename)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -1031,21 +1118,32 @@ func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[Geo] updated %s (%d bytes)", filename, written)
-	directRules = nil; proxyRules = nil
-	geoIPMatcher = nil; geoSiteMatcher = nil
-	resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
-	loadGeoIP(); loadGeoSite()
+	directRules = nil
+	proxyRules = nil
+	geoIPMatcher = nil
+	geoSiteMatcher = nil
+	resetGeoIPMatcherCache()
+	resetGeoSiteMatcherCache()
+	loadGeoIP()
+	loadGeoSite()
 	initRules(directStr, proxyStr, defaultRouteStr)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": fmt.Sprintf("%d bytes", written)})
 }
 
 func handleGeoReload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
-	directRules = nil; proxyRules = nil
-	geoIPMatcher = nil; geoSiteMatcher = nil
-	resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
-	loadGeoIP(); loadGeoSite()
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	directRules = nil
+	proxyRules = nil
+	geoIPMatcher = nil
+	geoSiteMatcher = nil
+	resetGeoIPMatcherCache()
+	resetGeoSiteMatcherCache()
+	loadGeoIP()
+	loadGeoSite()
 	initRules(directStr, proxyStr, defaultRouteStr)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
@@ -1064,7 +1162,10 @@ var geoUpgradeMirrors = map[string][]string{
 }
 
 func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" { http.Error(w, "POST only", 405); return }
+	if r.Method != "POST" {
+		http.Error(w, "POST only", 405)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	wg := &sync.WaitGroup{}
 	results := make(map[string]string)
@@ -1077,22 +1178,35 @@ func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
 			for _, url := range ms {
 				err := downloadGeoFile(url, filename)
 				if err == nil {
-					mu.Lock(); results[filename] = "updated"; mu.Unlock()
+					mu.Lock()
+					results[filename] = "updated"
+					mu.Unlock()
 					return
 				}
 				log.Printf("[Geo] mirror failed %s: %v", url, err)
 			}
-			mu.Lock(); results[filename] = "all mirrors failed"; mu.Unlock()
+			mu.Lock()
+			results[filename] = "all mirrors failed"
+			mu.Unlock()
 		}(geoType, mirrors)
 	}
 	wg.Wait()
 	allOk := true
-	for _, v := range results { if v != "updated" { allOk = false; break } }
+	for _, v := range results {
+		if v != "updated" {
+			allOk = false
+			break
+		}
+	}
 	if allOk {
-		directRules = nil; proxyRules = nil
-		geoIPMatcher = nil; geoSiteMatcher = nil
-		resetGeoIPMatcherCache(); resetGeoSiteMatcherCache()
-		loadGeoIP(); loadGeoSite()
+		directRules = nil
+		proxyRules = nil
+		geoIPMatcher = nil
+		geoSiteMatcher = nil
+		resetGeoIPMatcherCache()
+		resetGeoSiteMatcherCache()
+		loadGeoIP()
+		loadGeoSite()
 		initRules(directStr, proxyStr, defaultRouteStr)
 		log.Printf("[Geo] upgraded and reloaded")
 	}
@@ -1102,16 +1216,28 @@ func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
 func downloadGeoFile(url, filename string) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return fmt.Errorf("HTTP %d", resp.StatusCode) }
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
 	tmpName := filename + ".tmp"
 	f, err := os.Create(tmpName)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer f.Close()
 	n, err := io.Copy(f, resp.Body)
-	if err != nil { os.Remove(tmpName); return err }
-	if n < 1000 { os.Remove(tmpName); return fmt.Errorf("file too small (%d bytes)", n) }
+	if err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if n < 1000 {
+		os.Remove(tmpName)
+		return fmt.Errorf("file too small (%d bytes)", n)
+	}
 	f.Close()
 	return os.Rename(tmpName, filename)
 }
