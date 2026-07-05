@@ -1,4 +1,4 @@
-//go:build windows
+﻿//go:build windows
 
 package main
 
@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -51,7 +52,9 @@ func spawnNewProcess(desiredTun bool) {
 		log.Printf("[热加载] 启动新进程失败: %v", err)
 		return
 	}
-	log.Printf("[热加载] 新进程已启动 (PID: %d)，当前进程退出", cmd.Process.Pid)
+	log.Printf("[热加载] 新进程已启动 (PID: %d)，等待端口释放...", cmd.Process.Pid)
+	// Wait briefly for child to bind ports before exiting
+	time.Sleep(500 * time.Millisecond)
 	os.Exit(0)
 }
 

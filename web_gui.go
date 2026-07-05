@@ -21,6 +21,8 @@ var (
 	logBuffer    *ring.Ring
 	logMu        sync.RWMutex
 
+	webServer *http.Server
+
 	reconnectMu     sync.Mutex
 	reconnectNeeded bool
 
@@ -45,6 +47,12 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 	}
 	logMu.Unlock()
 	return len(p), nil
+}
+
+func stopWebGUI() {
+	if webServer != nil {
+		webServer.Close()
+	}
 }
 
 func startWebGUI() {
@@ -100,8 +108,9 @@ func startWebGUI() {
 	mux.HandleFunc("/api/saveconfig", handleSaveConfig)
 
 	go func() {
+		webServer = &http.Server{Handler: mux}
 		log.Printf("[Web GUI] 监听 %s", webListen)
-		if err := http.ListenAndServe(webListen, mux); err != nil {
+		if err := webServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[Web GUI] 错误: %v", err)
 		}
 	}()

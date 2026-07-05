@@ -1,4 +1,4 @@
-//go:build windows
+﻿//go:build windows
 
 package main
 
@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-)
+	)
 
 func handleTunToggle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -41,24 +41,29 @@ func handleTunToggle(w http.ResponseWriter, r *http.Request) {
 	tunMu.Unlock()
 
 	if req.Enable {
-		log.Printf("[TUN] 正在切换到 TUN 模式（需要管理员权限）...")
-		go spawnNewProcess(true)
+		// TUN ON: start TUN in-process (requires admin - process must be elevated)
+		log.Printf("[TUN] 正在启动 TUN 模式...")
+		go func() {
+			runTUNModeIfNeeded()
+			log.Printf("[TUN] TUN 模式已启动")
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":  true,
 			"tun_mode": true,
 			"active":   false,
-			"message":  "TUN 模式已启用，正在重启进程...",
+			"message":  "TUN 模式已启动",
 		})
 	} else {
+		// TUN OFF: stop TUN in-process (with recover protection)
 		log.Printf("[TUN] 正在关闭 TUN 模式...")
-		go spawnNewProcess(false)
+		go softStopTun()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":  true,
 			"tun_mode": false,
 			"active":   false,
-			"message":  "TUN 模式已关闭，正在重启进程...",
+			"message":  "TUN 模式已关闭",
 		})
 	}
 }

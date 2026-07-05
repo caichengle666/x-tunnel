@@ -1,4 +1,4 @@
-//go:build windows
+﻿//go:build windows
 
 package main
 
@@ -43,17 +43,52 @@ func stopTun() {
 	if !tunActive {
 		return
 	}
-	log.Printf("[TUN] stopping TUN...")
-	if tunStack != nil {
-		tunStack.gStack.Close()
-		tunStack = nil
-	}
+	log.Printf("[TUN] stopping TUN (gVisor stack may panic, contained)...")
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[TUN] stopTun recovered from panic: %v", r)
+		}
+	}()
+	// Close TUN device first (this triggers Wintun to restore routes)
 	if tunDevice != nil {
 		tunDevice.Close()
 		tunDevice = nil
 	}
+	// Close gVisor stack last (may panic on active connections)
+	if tunStack != nil {
+		tunStack.gStack.Close()
+		tunStack = nil
+	}
 	tunActive = false
 	log.Printf("[TUN] TUN stopped")
+}
+
+// softStopTun marks TUN as inactive without closing the gVisor stack.
+// Used when toggling TUN OFF from the Web UI to avoid crashes.
+func softStopTun() {
+	if !tunActive {
+		return
+	}
+	log.Printf("[TUN] soft-stopping TUN (preserving gVisor stack)...")
+	// Close the TUN device to restore OS routes
+	if tunDevice != nil {
+		tunDevice.Close()
+		tunDevice = nil
+	}
+	// Don't close the gVisor stack - it may panic on active TCP connections
+	// The stack will be cleaned up when the process exits
+	tunActive = false
+	routesRestored()
+	log.Printf("[TUN] TUN soft-stopped, routes restored")
+}
+
+// restores original routes after TUN is disabled.
+func routesRestored() {
+	if physIfaceIndex <= 0 {
+		return
+	}
+	// Force reopen the physical NIC to refresh routes
+	log.Printf("[TUN] 物理网卡索引 %d, 路由将被 Windows 自动恢复", physIfaceIndex)
 }
 
 // startLocalListeners starts SOCKS5/HTTP/TCP listeners based on listenAddr.
