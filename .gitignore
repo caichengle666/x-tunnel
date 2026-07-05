@@ -47,3 +47,10 @@ logs/
 
 # Docker
 .dockerignore should stay
+
+# Geo data files (downloaded at runtime)
+geoip.dat
+geosite.dat
+
+# Backup files
+*~

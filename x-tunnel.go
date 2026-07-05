@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bufio"
@@ -329,6 +329,12 @@ func main() {
 	}
 
 	// Start Web GUI now that config + flags are resolved
+	// Initialize client-side routing (direct/proxy split for SOCKS5/HTTP)
+	if !isServer {
+		initClientRouting()
+	}
+
+
 	startWebGUI()
 
 	// Now that config is loaded, check if we have a listen address
@@ -1949,6 +1955,22 @@ func shortID(id string) string {
 	return id
 }
 
+func proxyConn(a net.Conn, b net.Conn) {
+	defer a.Close()
+	defer b.Close()
+	errCh := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(a, b)
+		errCh <- err
+	}()
+	go func() {
+		_, err := io.Copy(b, a)
+		errCh <- err
+	}()
+	<-errCh
+}
+
+
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
 	var sent, recv int64
 	wg := sync.WaitGroup{}
@@ -2566,6 +2588,27 @@ func handleSOCKS5UserPassAuth(c net.Conn, cfgp *ProxyConfig) error {
 }
 
 func handleSOCKS5Connect(c net.Conn, target string) {
+	host, _, _ := net.SplitHostPort(target)
+	shouldDirect, reason := shouldDirectTCP(host, target)
+	if shouldDirect {
+		log.Printf("[direct] SOCKS5 %s (%s)", target, reason)
+		remote, err := net.DialTimeout("tcp", target, cfg.DialTimeout)
+		if err != nil {
+			log.Printf("[direct] dial failed: %v", err)
+			_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			_ = c.Close()
+			return
+		}
+		_, err = c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if err != nil {
+			_ = remote.Close()
+			_ = c.Close()
+			return
+		}
+		proxyConn(c, remote)
+		return
+	}
+
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
 		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
@@ -2578,7 +2621,6 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 		_ = c.Close()
 		return
 	}
-	// 隧道已建立，回复成功
 	_, err = c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	if err != nil {
 		_ = stream.Close()
@@ -2589,6 +2631,7 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 	defer logClientConnEvent(c, "SOCKS5", target, decision, false)
 	proxyConnStream(c, stream)
 }
+
 
 func handleSOCKS5UDP(c net.Conn, cfgp *ProxyConfig) {
 	host, _, _ := net.SplitHostPort(cfgp.Host)
@@ -2883,7 +2926,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 			}
 		}
 		if !ok {
-			_, _ = c.Write([]byte("HTTP/1.1 407 需要认证\r\nProxy-Authenticate: Basic realm=\"代理\"\r\n\r\n"))
+			_, _ = c.Write([]byte("HTTP/1.1 407 Authorization Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n"))
 			return
 		}
 	}
@@ -2897,10 +2940,30 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 		}
 	}
 
-	var first []byte
+	host, _, _ := net.SplitHostPort(target)
+	shouldDirect, reason := shouldDirectTCP(host, target)
+	if shouldDirect {
+		log.Printf("[direct] HTTP %s %s (%s)", req.Method, target, reason)
+		remote, err := net.DialTimeout("tcp", target, cfg.DialTimeout)
+		if err != nil {
+			return
+		}
+		if req.Method == "CONNECT" {
+			_, _ = c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		}
+		if req.Method != "CONNECT" {
+			req.RequestURI = ""
+			req.URL.Scheme = ""
+			req.URL.Host = ""
+			_ = req.Write(remote)
+		}
+		proxyConn(c, remote)
+		return
+	}
 
+	var first []byte
 	if req.Method == "CONNECT" {
-		_, _ = c.Write([]byte("HTTP/1.1 200 连接已建立\r\n\r\n"))
+		_, _ = c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	} else {
 		req.RequestURI = ""
 		req.URL.Scheme = ""
@@ -2930,11 +2993,13 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 }
 
 
+
 type countingStream struct {
 	*smux.Stream
 	counter     *int64
 	recvCounter *int64
 }
+
 
 func (cs *countingStream) Write(p []byte) (int, error) {
 	n, err := cs.Stream.Write(p)
