@@ -237,8 +237,16 @@ func StartTun(cfg *TunConfig) error {
 	log.Printf("[TUN] interface %s up", cfg.Name)
 	log.Printf("[TUN] DNS listener on TUN gateways")
 	go runDNSListener(cfg, ts.handler)
-	_ = ts
-	select {}
+
+	// Store TUN state for runtime management
+	tunMu.Lock()
+	tunActive = true
+	tunDevice = tun
+	tunStack = ts
+	tunMu.Unlock()
+
+	log.Printf("[TUN] TUN fully active (runtime-togglable)")
+	return nil
 }
 
 func createGVisorStack(ep *tunLinkEndpoint) (*stack.Stack, error) {

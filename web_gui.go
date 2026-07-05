@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"flag"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,9 +48,9 @@ func startWebGUI() {
 		return
 	}
 
-	// Capture standard log output.
+	// Capture standard log output while keeping stderr output.
 	logBuffer = ring.New(logRingSize)
-	log.SetOutput(logWriter{})
+	log.SetOutput(io.MultiWriter(logWriter{}, os.Stderr))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleDashboard)
@@ -57,6 +58,8 @@ func startWebGUI() {
 	mux.HandleFunc("/api/logs", handleLogs)
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/api/update", handleUpdateConfig)
+	mux.HandleFunc("/api/tun/toggle", handleTunToggle)
+	mux.HandleFunc("/api/tun/status", handleTunStatus)
 	mux.HandleFunc("/api/restart", handleRestartClient)
 mux.HandleFunc("/api/servers/add", handleAddServer)
 mux.HandleFunc("/api/servers/update", handleUpdateServer)
@@ -94,6 +97,7 @@ func statusJSON() map[string]interface{} {
 		"web_listen":  webListen,
 		"strategy":   tunnelConfig.Strategy,
 	}
+    result["tun_mode"] = tunMode
 
 	// Server mode (no echPool)
 	if echPool == nil {
@@ -225,6 +229,13 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"ips":           ips,
 		"connections":   tunnelConfig.Connections,
 		"strategy":      tunnelConfig.Strategy,
+		"tun_mode":      tunnelConfig.TunMode,
+		"mode": func() string {
+			if echPool == nil && forwardAddr == "" {
+				return "server"
+			}
+			return "client"
+		}(),
 	})
 }
 
@@ -265,6 +276,10 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="bg-gray-800 rounded-lg p-4">
             <div class="text-gray-400 text-sm">策略</div>
             <div class="text-lg font-mono" id="cfg-strategy">--</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4">
+            <div class="text-gray-400 text-sm">TUN 模式</div>
+            <div class="text-lg font-mono" id="cfg-tun-mode">--</div>
         </div>
     </div>
 
@@ -395,6 +410,14 @@ function fetchStatus() {
             if (stratEl) stratEl.textContent = data.strategy;
             var sel = document.getElementById('cfg-strategy-select');
             if (sel) sel.value = data.strategy;
+        }
+        // Update TUN mode display
+        var tunEl = document.getElementById('cfg-tun-mode');
+        if (tunEl) tunEl.textContent = data.tun_mode ? '已启用' : '未启用';
+        // Hide TUN card in server mode
+        if (data.mode) pageMode = data.mode;
+        if (tunEl && tunEl.parentElement) {
+            tunEl.parentElement.style.display = (data.mode === 'server') ? 'none' : '';
         }
         // Update listen address
         var listenEl = document.getElementById('cfg-listen');
@@ -588,6 +611,7 @@ function editGlobalConfig() {
         document.getElementById('edit-connections').value = data.connections || '3';
         document.getElementById('edit-strategy').value = data.strategy || 'failover';
         document.getElementById('edit-ips').value = data.ips || '';
+        document.getElementById('edit-tun-mode').checked = !!data.tun_mode;
         document.getElementById('global-config-panel').classList.remove('hidden');
     });
 }
@@ -601,7 +625,8 @@ function saveGlobalConfig() {
         listen: document.getElementById('edit-listen').value,
         connections: parseInt(document.getElementById('edit-connections').value) || 3,
         strategy: document.getElementById('edit-strategy').value,
-        ips: document.getElementById('edit-ips').value
+        ips: document.getElementById('edit-ips').value,
+        tun_mode: document.getElementById('edit-tun-mode').checked
     };
     var msgDiv = document.getElementById('edit-global-msg');
     msgDiv.className = 'mt-2 text-sm text-yellow-400';
@@ -657,6 +682,10 @@ setInterval(fetchLogs, 2000);
                     <label class="text-gray-400 text-sm">IP策略</label>
                     <input id="edit-ips" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="">
                 </div>
+                <div class="flex items-center space-x-2 pt-2">
+                    <input id="edit-tun-mode" type="checkbox" class="w-4 h-4" onchange="toggleTun(this.checked)">
+                    <label class="text-gray-400 text-sm">TUN 模式 (仅 Windows) <span id="tun-toggle-status" class="text-xs"></span></label>
+                </div>
             </div>
             <div class="mt-6 flex space-x-3">
                 <button onclick="saveGlobalConfig()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">保存并重启</button>
@@ -681,6 +710,7 @@ type updateRequest struct {
     Insecure   *bool  `json:"insecure,omitempty"`
     IPs        string `json:"ips,omitempty"`
     Strategy   string `json:"strategy,omitempty"`
+    TunMode    *bool  `json:"tun_mode,omitempty"`
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -743,6 +773,12 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
         }
         changes = append(changes, "strategy")
     }
+    if req.TunMode != nil && *req.TunMode != tunnelConfig.TunMode {
+        log.Printf("[热加载] tun_mode: %t -> %t", tunnelConfig.TunMode, *req.TunMode)
+        tunnelConfig.TunMode = *req.TunMode
+        tunMode = *req.TunMode
+        changes = append(changes, "tun_mode")
+    }
     if req.Listen != "" && req.Listen != tunnelConfig.Listen {
         log.Printf("[热加载] listen: %s -> %s", tunnelConfig.Listen, req.Listen)
         tunnelConfig.Listen = req.Listen
@@ -775,6 +811,77 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
     })
 }
 
+
+func handleTunToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Enable bool `json:"enable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "JSON parse error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tunMu.Lock()
+	if req.Enable == tunMode {
+		active := tunActive
+		tunMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"tun_mode": tunMode,
+			"active":   active,
+			"message":  "TUN 已在请求状态",
+		})
+		return
+	}
+
+	tunnelConfig.TunMode = req.Enable
+	tunMode = req.Enable
+	_ = saveConfigToFile()
+	tunMu.Unlock()
+
+	if req.Enable {
+		// Need admin to start TUN - spawn new elevated process with -tun
+		log.Printf("[TUN] 正在切换到 TUN 模式（需要管理员权限）...")
+		go spawnNewProcess(true)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"tun_mode": true,
+			"active":   false,
+			"message":  "TUN 模式已启用，正在重启进程...",
+		})
+	} else {
+		// Stop TUN and restart without -tun
+		log.Printf("[TUN] 正在关闭 TUN 模式...")
+		go spawnNewProcess(false)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"tun_mode": false,
+			"active":   false,
+			"message":  "TUN 模式已关闭，正在重启进程...",
+		})
+	}
+}
+
+func handleTunStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tun_mode": tunMode,
+		"active":   IsTunActive(),
+	})
+}
+
+// copyTunConfigAndStart copies current config to a TunConfig and calls runTUNModeIfNeeded
+func copyTunConfigAndStart() {
+	runTUNModeIfNeeded()
+}
+
 func handleRestartClient(w http.ResponseWriter, r *http.Request) {
     if r.Method != "POST" {
         http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
@@ -791,13 +898,12 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 
         if echPool != nil {
             echPool.Stop()
-		stopAllListeners()  // close old listeners before restart
             echPool = nil
-            stopAllListeners()  // close old listeners before restart
         }
+        stopAllListeners()
+
         // Rebuild from current tunnelConfig (supports multi-server)
         if len(tunnelConfig.Servers) > 0 {
-            // Ensure each server has defaults
             for i := range tunnelConfig.Servers {
                 if tunnelConfig.Servers[i].Name == "" {
                     tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
@@ -811,23 +917,25 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
             }
             echPool = NewMultiPool(&tunnelConfig)
             echPool.Start()
-		startListeners()
-		startListeners()  // restart listeners on (possibly new) ports
-            startListeners()  // start listeners on (possibly new) ports
-            startListeners()  // start listeners on (possibly new) ports
+            startListeners()
+            if tunMode {
+                go runTUNModeIfNeeded()
+            }
             serverNames := make([]string, 0, len(tunnelConfig.Servers))
             for _, s := range tunnelConfig.Servers {
                 serverNames = append(serverNames, s.Name)
             }
             log.Printf("[热加载] 客户端重启完成，%d 台服务器: %v", len(tunnelConfig.Servers), serverNames)
         } else if forwardAddr != "" {
-            // Single-server fallback
             tunnelConfig.Servers = []ServerConfig{{Name: forwardAddr, URL: forwardAddr, Token: token, Connections: connectionNum}}
             if tunnelConfig.Strategy == "" {
                 tunnelConfig.Strategy = "failover"
             }
             echPool = NewMultiPool(&tunnelConfig)
             echPool.Start()
+            if tunMode {
+                go runTUNModeIfNeeded()
+            }
             log.Printf("[热加载] 客户端重启完成（单服务器模式）: %s", forwardAddr)
         }
     }()
@@ -838,7 +946,6 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
         "message": "客户端正在重启...",
     })
 }
-
 
 
 // ======================== Multi-Server Management ========================

@@ -5,6 +5,7 @@ package main
 import (
 	"log"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -12,8 +13,78 @@ import (
 // physIfaceIndex 是物理网卡接口索引，用于绕过 TUN 路由。
 var physIfaceIndex int = -1
 
+// Runtime TUN toggle state
+var (
+	tunMu     sync.Mutex
+	tunActive bool
+	tunDevice *WindowsTun
+	tunStack  *gVisorStack
+
+	localListenersStarted bool
+)
+
+// IsTunActive returns true if TUN is currently running
+func IsTunActive() bool {
+	tunMu.Lock()
+	defer tunMu.Unlock()
+	return tunActive
+}
+
+// StopTun is the public wrapper that locks tunMu (for direct API calls).
+func StopTun() {
+	tunMu.Lock()
+	defer tunMu.Unlock()
+	stopTun()
+}
+
+// stopTun shuts down the TUN interface and gVisor stack.
+// NOTE: Caller MUST hold tunMu lock before calling.
+func stopTun() {
+	if !tunActive {
+		return
+	}
+	log.Printf("[TUN] stopping TUN...")
+	if tunStack != nil {
+		tunStack.gStack.Close()
+		tunStack = nil
+	}
+	if tunDevice != nil {
+		tunDevice.Close()
+		tunDevice = nil
+	}
+	tunActive = false
+	log.Printf("[TUN] TUN stopped")
+}
+
+// startLocalListeners starts SOCKS5/HTTP/TCP listeners based on listenAddr.
+// Must be called only once (guarded by localListenersStarted).
+func startLocalListeners() {
+	listeners := strings.Split(listenAddr, ",")
+	for _, listenerRule := range listeners {
+		rule := strings.TrimSpace(listenerRule)
+		if rule == "" {
+			continue
+		}
+		if strings.HasPrefix(rule, "socks5://") {
+			go runSOCKS5Listener(rule)
+		} else if strings.HasPrefix(rule, "http://") {
+			go runHTTPListener(rule)
+		} else if strings.HasPrefix(rule, "tcp://") {
+			go runTCPListener(rule)
+		} else {
+			log.Printf("[客户端] 忽略未知协议的监听地址: %s", rule)
+		}
+	}
+}
+
 // runTUNModeIfNeeded 是 TUN 模式的完整入口，仅在 Windows 上被调用。
 func runTUNModeIfNeeded() {
+	// Always ensure local listeners are started (only once)
+	if !localListenersStarted {
+		localListenersStarted = true
+		startLocalListeners()
+	}
+
 	if !tunMode {
 		return
 	}
@@ -35,8 +106,8 @@ func runTUNModeIfNeeded() {
 	loadGeoIP()
 	loadGeoSite()
 
-	if forwardAddr == "" {
-		log.Fatalf("[TUN] TUN 模式必须指定服务地址 (-f ws:// 或 wss://)")
+	if forwardAddr == "" && len(tunnelConfig.Servers) == 0 {
+		log.Printf("[TUN] 警告: 未指定服务地址且配置文件无服务器，TUN 可能无法正常工作")
 	}
 
 	routes := []string{"0.0.0.0/0"}
@@ -65,24 +136,9 @@ func runTUNModeIfNeeded() {
 	log.Printf("[TUN] 配置: device=%s, mtu=%d, addr=%v, routes=%v",
 		tunCfg.Name, tunCfg.MTU, tunCfg.Gateway, tunCfg.AutoSystemRoutingTable)
 
-	// 在启动 TUN 之前，先启动本地监听
-	listeners := strings.Split(listenAddr, ",")
-	for _, listenerRule := range listeners {
-		rule := strings.TrimSpace(listenerRule)
-		if rule == "" {
-			continue
-		}
-		if strings.HasPrefix(rule, "socks5://") {
-			go runSOCKS5Listener(rule)
-		} else if strings.HasPrefix(rule, "http://") {
-			go runHTTPListener(rule)
-		} else if strings.HasPrefix(rule, "tcp://") {
-			go runTCPListener(rule)
-		}
-	}
-
 	if err := StartTun(tunCfg); err != nil {
-		log.Fatalf("[TUN] TUN 启动失败: %v", err)
+		log.Printf("[TUN] TUN 启动失败: %v (代理仍可用)", err)
+		return
 	}
 }
 

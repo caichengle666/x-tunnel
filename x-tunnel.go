@@ -153,11 +153,13 @@ func startListeners() {
 	}
 }
 
+var flagSet = map[string]bool{}
+
 func main() {
 	flag.Parse()
 
-	// 启动 Web GUI（如果 -web 参数已设置）
-	startWebGUI()
+	// Track explicitly set flags for priority: flag > config > default
+	flag.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
 
 	listenerStop = make(chan struct{})
 	activeListeners = []net.Listener{}
@@ -292,6 +294,9 @@ func main() {
 		}
 		if err == nil && len(cfg.Servers) > 0 {
 			tunnelConfig = *cfg
+			if !flagSet["tun"] { tunMode = cfg.TunMode }
+			if !flagSet["web"] && cfg.WebListen != "" { webListen = cfg.WebListen }
+		if !flagSet["web"] && webListen == "" { webListen = ":9090" }
 			if cfg.Listen != "" && listenAddr == "" {
 				listenAddr = cfg.Listen
 			}
@@ -323,6 +328,9 @@ func main() {
 		echPool.Start()
 	}
 
+	// Start Web GUI now that config + flags are resolved
+	startWebGUI()
+
 	// Now that config is loaded, check if we have a listen address
 	if listenAddr == "" && !tunMode {
 		log.Printf("[客户端] 错误: 未指定监听地址（-l 参数或 config.json 中的 listen 字段）")
@@ -348,44 +356,7 @@ func main() {
 
 	runTUNModeIfNeeded()
 
-	// 非 TUN 模式的本地监听（TUN 模式的已在上面启动）
-	if !tunMode {
-		var wg sync.WaitGroup
-		for _, listenerRule := range listeners {
-			rule := strings.TrimSpace(listenerRule)
-			if rule == "" {
-				continue
-			}
-
-			if strings.HasPrefix(rule, "tcp://") {
-				wg.Add(1)
-				go func(r string) {
-					defer wg.Done()
-					runTCPListener(r)
-				}(rule)
-			} else if strings.HasPrefix(rule, "socks5://") {
-				wg.Add(1)
-				go func(r string) {
-					defer wg.Done()
-					runSOCKS5Listener(r)
-				}(rule)
-			} else if strings.HasPrefix(rule, "http://") {
-				wg.Add(1)
-				go func(r string) {
-					defer wg.Done()
-					runHTTPListener(r)
-				}(rule)
-			} else {
-				log.Printf("[客户端] 忽略未知协议的监听地址: %s", rule)
-			}
-		}
-		wg.Wait()
-	} else {
-		// TUN 模式下 StartTun 内部 select{} 阻塞，这里也阻塞主 goroutine
-		select {}
-	}
-
-	// Keep main goroutine alive after listener hot restart
+	// Block main goroutine to keep process alive
 	select {}
 }
 

@@ -1,0 +1,17 @@
+{
+  "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:30001",
+  "strategy": "failover",
+  "dns": "https://doh.pub/dns-query",
+  "block_ports": "443",
+  "connections": 6,
+  "servers": [
+    {
+      "name": "server",
+      "url": "ws://129.154.49.95:8080/tunnel",
+      "token": "mysecret123",
+      "connections": 3,
+      "weight": 100
+    }
+  ],
+  "web_listen": ":9091"
+}

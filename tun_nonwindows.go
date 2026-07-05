@@ -1,4 +1,4 @@
-//go:build !windows
+﻿//go:build !windows
 
 package main
 
@@ -27,6 +27,10 @@ func loadGeoSite() {}
 func StartTun(cfg *TunConfig) error {
 	return nil
 }
+
+func IsTunActive() bool { return false }
+
+func StopTun() {}
 
 func bindSocketToPhysNIC(_ string, _ syscall.RawConn) error {
 	return nil

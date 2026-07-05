@@ -26,6 +26,8 @@ type TunnelConfig struct {
 	Connections int            `json:"connections,omitempty"`   // 全局默认连接数
 	IPStrategy  string         `json:"ip_strategy,omitempty"`   // 全局 IP 策略
 	Servers     []ServerConfig `json:"servers"`                 // 服务器列表
+	TunMode     bool           `json:"tun_mode,omitempty"`      // TUN 模式（仅 Windows）
+	WebListen   string         `json:"web_listen,omitempty"`    // Web GUI 监听地址
 }
 
 // ConfigPaths 配置文件搜索路径
