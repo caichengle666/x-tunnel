@@ -19,15 +19,15 @@ type ServerConfig struct {
 
 // TunnelConfig 完整配置文件
 type TunnelConfig struct {
-	Listen      string         `json:"listen"`                 // 本地监听地址
-	Strategy    string         `json:"strategy"`                // failover | loadbalance | latency
-	DNS         string         `json:"dns,omitempty"`           // DNS 服务器
-	BlockPorts  string         `json:"block_ports,omitempty"`   // UDP 拦截端口
-	Connections int            `json:"connections,omitempty"`   // 全局默认连接数
-	IPStrategy  string         `json:"ip_strategy,omitempty"`   // 全局 IP 策略
-	Servers     []ServerConfig `json:"servers"`                 // 服务器列表
-	TunMode     bool           `json:"tun_mode,omitempty"`      // TUN 模式（仅 Windows）
-	WebListen   string         `json:"web_listen,omitempty"`    // Web GUI 监听地址
+	Listen      string         `json:"listen"`                // 本地监听地址
+	Strategy    string         `json:"strategy"`              // failover | loadbalance | latency
+	DNS         string         `json:"dns,omitempty"`         // DNS 服务器
+	BlockPorts  string         `json:"block_ports,omitempty"` // UDP 拦截端口
+	Connections int            `json:"connections,omitempty"` // 全局默认连接数
+	IPStrategy  string         `json:"ip_strategy,omitempty"` // 全局 IP 策略
+	Servers     []ServerConfig `json:"servers"`               // 服务器列表
+	TunMode     bool           `json:"tun_mode,omitempty"`    // TUN 模式（仅 Windows）
+	WebListen   string         `json:"web_listen,omitempty"`  // Web GUI 监听地址
 }
 
 // ConfigPaths 配置文件搜索路径

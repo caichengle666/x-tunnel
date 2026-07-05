@@ -14,10 +14,10 @@ import (
 type PoolState int
 
 const (
-	PoolUnknown   PoolState = iota
-	PoolHealthy             // 健康：有可用通道
-	PoolDegraded            // 降级：部分通道异常
-	PoolDead                // 死亡：所有通道断开
+	PoolUnknown  PoolState = iota
+	PoolHealthy            // 健康：有可用通道
+	PoolDegraded           // 降级：部分通道异常
+	PoolDead               // 死亡：所有通道断开
 )
 
 // ServerPool 包装单台服务器的 ECHPool + 元数据
@@ -65,7 +65,9 @@ func (mp *MultiPool) Start() {
 	for _, sp := range mp.servers {
 		sp.mu.Lock()
 		srvToken := sp.Config.Token
-		if srvToken == "" { srvToken = token }
+		if srvToken == "" {
+			srvToken = token
+		}
 		sp.Pool = NewECHPool(sp.Config.URL, sp.Config.Connections, nil, clientID, srvToken)
 		sp.Pool.Start()
 		sp.State = PoolHealthy
@@ -298,17 +300,17 @@ func (mp *MultiPool) Servers() []ServerStatus {
 
 // ServerStatus API 返回的服务器状态
 type ServerStatus struct {
-	Name     string    `json:"name"`
-	URL      string    `json:"url"`
-	State    string    `json:"state"`
-	RTT      int64     `json:"rtt"`
-	Channels int       `json:"channels"`
-	Healthy  bool      `json:"healthy"`
-	Sent     int64     `json:"sent"`
-	Recv     int64     `json:"recv"`
-    SentSpeed int64     `json:"sent_speed"`
-    RecvSpeed int64     `json:"recv_speed"`
-	Updated  time.Time `json:"updated"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	State     string    `json:"state"`
+	RTT       int64     `json:"rtt"`
+	Channels  int       `json:"channels"`
+	Healthy   bool      `json:"healthy"`
+	Sent      int64     `json:"sent"`
+	Recv      int64     `json:"recv"`
+	SentSpeed int64     `json:"sent_speed"`
+	RecvSpeed int64     `json:"recv_speed"`
+	Updated   time.Time `json:"updated"`
 }
 
 // healthLoop 定期检测所有服务器的健康状态
@@ -351,7 +353,6 @@ func (mp *MultiPool) checkAllHealth() {
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
-
 
 // ====== 兼容 ECHPool 接口的方法 ======
 

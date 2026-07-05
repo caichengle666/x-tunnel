@@ -77,7 +77,7 @@ var (
 	echList   []byte
 	refreshMu sync.Mutex
 
-	echPool *MultiPool
+	echPool    *MultiPool
 	configFile string
 
 	clientID      string
@@ -129,7 +129,9 @@ func stopAllListeners() {
 		}
 	}
 	for _, l := range activeListeners {
-		if l != nil { l.Close() }
+		if l != nil {
+			l.Close()
+		}
 	}
 	activeListeners = []net.Listener{}
 	listenerStop = make(chan struct{})
@@ -140,7 +142,9 @@ func startListeners() {
 	listenerRules := strings.Split(listenAddr, ",")
 	for _, listenerRule := range listenerRules {
 		rule := strings.TrimSpace(listenerRule)
-		if rule == "" { continue }
+		if rule == "" {
+			continue
+		}
 		if strings.HasPrefix(rule, "tcp://") {
 			go runTCPListener(rule)
 		} else if strings.HasPrefix(rule, "socks5://") {
@@ -294,9 +298,15 @@ func main() {
 		}
 		if err == nil && len(cfg.Servers) > 0 {
 			tunnelConfig = *cfg
-			if !flagSet["tun"] { tunMode = cfg.TunMode }
-			if !flagSet["web"] && cfg.WebListen != "" { webListen = cfg.WebListen }
-		if !flagSet["web"] && webListen == "" { webListen = ":9090" }
+			if !flagSet["tun"] {
+				tunMode = cfg.TunMode
+			}
+			if !flagSet["web"] && cfg.WebListen != "" {
+				webListen = cfg.WebListen
+			}
+			if !flagSet["web"] && webListen == "" {
+				webListen = ":9090"
+			}
 			if cfg.Listen != "" && listenAddr == "" {
 				listenAddr = cfg.Listen
 			}
@@ -333,7 +343,6 @@ func main() {
 	if !isServer {
 		initClientRouting()
 	}
-
 
 	startWebGUI()
 
@@ -1379,7 +1388,6 @@ func runWebSocketServer(addr string) {
 </body></html>`, path, map[bool]string{true: "已设置", false: "未设置"}[token != ""])
 	})
 
-
 	if u.Scheme == "wss" {
 		server := &http.Server{Addr: u.Host}
 		if certFile != "" && keyFile != "" {
@@ -1736,7 +1744,7 @@ func NewECHPool(addr string, n int, ips []string, clientID string, authToken str
 		speedStop:     make(chan struct{}),
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
-	
+
 	// 速度计算 goroutine
 	go p.speedCalc()
 	return p
@@ -1754,25 +1762,29 @@ func (p *ECHPool) speedCalc() {
 			now := time.Now()
 			curSent := atomic.LoadInt64(&p.bytesSent)
 			curRecv := atomic.LoadInt64(&p.bytesRecv)
-			
+
 			lastSent := atomic.LoadInt64(&p.lastBytesSent)
 			lastRecv := atomic.LoadInt64(&p.lastBytesRecv)
 			lastTime := p.lastSpeedTime
-			
+
 			elapsed := now.Sub(lastTime).Seconds()
 			if elapsed > 0 {
 				sentDiff := curSent - lastSent
 				recvDiff := curRecv - lastRecv
-				if sentDiff < 0 { sentDiff = 0 }
-				if recvDiff < 0 { recvDiff = 0 }
+				if sentDiff < 0 {
+					sentDiff = 0
+				}
+				if recvDiff < 0 {
+					recvDiff = 0
+				}
 				atomic.StoreInt64(&p.sentSpeed, int64(float64(sentDiff)/elapsed))
 				atomic.StoreInt64(&p.recvSpeed, int64(float64(recvDiff)/elapsed))
 			}
-			
+
 			atomic.StoreInt64(&p.lastBytesSent, curSent)
 			atomic.StoreInt64(&p.lastBytesRecv, curRecv)
 			p.lastSpeedTime = now
-			
+
 		case <-p.speedStop:
 			return
 		}
@@ -1969,7 +1981,6 @@ func proxyConn(a net.Conn, b net.Conn) {
 	}()
 	<-errCh
 }
-
 
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
 	var sent, recv int64
@@ -2632,7 +2643,6 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 	proxyConnStream(c, stream)
 }
 
-
 func handleSOCKS5UDP(c net.Conn, cfgp *ProxyConfig) {
 	host, _, _ := net.SplitHostPort(cfgp.Host)
 	uAddr, _ := net.ResolveUDPAddr("udp", net.JoinHostPort(host, "0"))
@@ -2992,14 +3002,11 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	proxyConnStream(c, stream)
 }
 
-
-
 type countingStream struct {
 	*smux.Stream
 	counter     *int64
 	recvCounter *int64
 }
-
 
 func (cs *countingStream) Write(p []byte) (int, error) {
 	n, err := cs.Stream.Write(p)

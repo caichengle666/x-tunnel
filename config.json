@@ -1,5 +1,5 @@
 {
-  "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:30001",
+  "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:1090",
   "strategy": "failover",
   "dns": "https://doh.pub/dns-query",
   "block_ports": "443",
@@ -7,9 +7,16 @@
   "servers": [
     {
       "name": "server",
-      "url": "ws://129.154.49.95:8080/tunnel",
+      "url": "wss://xkr.021800.xyz/tunnel",
       "token": "mysecret123",
-      "connections": 3,
+      "connections": 6,
+      "weight": 100
+    },
+    {
+      "name": "香港",
+      "url": "wss://xhk.021800.xyz/tunnel",
+      "token": "hksecret2026",
+      "connections": 5,
       "weight": 100
     }
   ],
