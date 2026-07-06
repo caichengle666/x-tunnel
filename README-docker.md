@@ -10,13 +10,13 @@
 一键部署：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caichengle666/x-tunnel/main/deploy-server.sh -o deploy-server.sh
-sudo TOKEN=change-me bash deploy-server.sh
+curl -fsSL https://raw.githubusercontent.com/caichengle666/x-tunnel/main/deploy-server.sh | sudo bash
 ```
 
 可选参数：
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/x-tunnel/main/deploy-server.sh -o deploy-server.sh
 sudo bash deploy-server.sh --token change-me --port 8090 --cidr 0.0.0.0/0
 ```
 

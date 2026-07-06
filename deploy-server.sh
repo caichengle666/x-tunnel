@@ -3,8 +3,8 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/xtunnel}"
 IMAGE="${IMAGE:-ghcr.io/caichengle666/x-tunnel:latest}"
-PORT="${PORT:-8090}"
-CIDR="${CIDR:-0.0.0.0/0}"
+PORT="${PORT:-}"
+CIDR="${CIDR:-}"
 TOKEN="${TOKEN:-}"
 
 usage() {
@@ -12,6 +12,7 @@ usage() {
 x-tunnel Docker server one-click deploy
 
 Usage:
+  curl -fsSL https://raw.githubusercontent.com/caichengle666/x-tunnel/main/deploy-server.sh | sudo bash
   TOKEN=your-secret bash deploy-server.sh
   bash deploy-server.sh --token your-secret [--port 8090] [--cidr 0.0.0.0/0] [--dir /opt/xtunnel]
 
@@ -59,10 +60,37 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+prompt_value() {
+  var_name="$1"
+  prompt="$2"
+  default_value="${3:-}"
+  current_value="$(eval "printf '%s' \"\${$var_name:-}\"")"
+  if [ -n "$current_value" ]; then
+    return
+  fi
+  if [ ! -r /dev/tty ]; then
+    return
+  fi
+  if [ -n "$default_value" ]; then
+    printf "%s [%s]: " "$prompt" "$default_value" > /dev/tty
+  else
+    printf "%s: " "$prompt" > /dev/tty
+  fi
+  IFS= read -r input < /dev/tty || input=""
+  if [ -z "$input" ]; then
+    input="$default_value"
+  fi
+  printf -v "$var_name" '%s' "$input"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Please run as root, or use: sudo TOKEN=your-secret bash deploy-server.sh" >&2
+  echo "Please run as root, or use: curl -fsSL https://raw.githubusercontent.com/caichengle666/x-tunnel/main/deploy-server.sh | sudo bash" >&2
   exit 1
 fi
+
+prompt_value TOKEN "Enter server token"
+prompt_value PORT "Enter server port" "8090"
+prompt_value CIDR "Enter allowed client CIDR" "0.0.0.0/0"
 
 if [ -z "$TOKEN" ]; then
   echo "TOKEN is required. Example: TOKEN=your-secret bash deploy-server.sh" >&2
