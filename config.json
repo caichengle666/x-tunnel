@@ -1,0 +1,21 @@
+{
+  "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:1090",
+  "strategy": "failover",
+  "servers": [
+    {
+      "name": "韩国",
+      "url": "wss://xkr.021800.xyz/tunnel",
+      "token": "mysecret123",
+      "connections": 6,
+      "weight": 100
+    },
+    {
+      "name": "香港",
+      "url": "wss://xhk.021800.xyz/tunnel",
+      "token": "hksecret2026",
+      "connections": 5,
+      "weight": 100
+    }
+  ],
+  "web_listen": ":9090"
+}
