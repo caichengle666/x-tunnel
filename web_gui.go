@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"container/ring"
@@ -108,7 +108,7 @@ func startWebGUI() {
 	mux.HandleFunc("/api/saveconfig", handleSaveConfig)
 
 	go func() {
-		webServer = &http.Server{Handler: mux}
+		webServer = &http.Server{Handler: mux, Addr: webListen}
 		log.Printf("[Web GUI] 监听 %s", webListen)
 		if err := webServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[Web GUI] 错误: %v", err)
