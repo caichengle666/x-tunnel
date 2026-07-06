@@ -703,7 +703,32 @@ function restartClient() {
 }
 
 function uploadGeoFile(t){var fi=document.getElementById(t+"-file"),m=document.getElementById(t+"-msg");if(!fi.files.length){m.textContent="no file";m.className="mt-1 text-xs text-yellow-400";m.classList.remove("hidden");return}var fd=new FormData();fd.append("file",fi.files[0]);fd.append("type",t);m.textContent="uploading...";m.className="mt-1 text-xs text-blue-400";m.classList.remove("hidden");fetch("/api/geo/upload",{method:"POST",body:fd}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK: "+resp.message:"FAIL: "+resp.message;m.className=resp.success?"mt-1 text-xs text-green-400":"mt-1 text-xs text-red-400"}).catch(function(e){m.textContent="err:"+e;m.className="mt-1 text-xs text-red-400"})}function reloadGeoData(){var m=document.getElementById("geo-reload-msg");m.textContent="reloading...";m.classList.remove("hidden");fetch("/api/geo/reload",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK":"FAIL";setTimeout(function(){m.classList.add("hidden")},4000)}).catch(function(){m.textContent="err"})}function updateGeoStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(d){if(d.geoip)document.getElementById("geoip-status").textContent=d.geoip;if(d.geosite)document.getElementById("geosite-status").textContent=d.geosite}).catch(function(){})}
-function onlineUpgrade(){var m=document.getElementById("geo-upgrade-msg");m.textContent="Downloading...";m.className="text-sm text-blue-400 self-center";m.classList.remove("hidden");fetch("/api/geo/upgrade",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){if(resp.success){m.textContent="OK: "+msgLoaded();m.className="text-sm text-green-400 self-center";updateGeoStatus()}else{m.textContent="FAIL: "+resp.message;m.className="text-sm text-red-400 self-center"}}).catch(function(e){m.textContent="FAIL: "+e;m.className="text-sm text-red-400 self-center"})}function msgLoaded(){return "geo data ready"}
+function onlineUpgrade(){var m=document.getElementById("geo-upgrade-msg");m.textContent="Downloading...";m.className="text-sm text-blue-400 self-center";m.classList.remove("hidden");fetch("/api/geo/upgrade",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){if(resp.success){m.textContent="OK: "+msgLoaded();m.className="text-sm text-green-400 self-center";updateGeoStatus()}else{m.textContent="FAIL: "+resp.message;m.className="text-sm text-red-400 self-center"}}).catch(function(e){m.textContent="FAIL: "+e;m.className="text-sm text-red-400 self-center"})}function toggleTun(enable) {
+    var el = document.getElementById('tun-toggle-status');
+    el.textContent = 'setting...';
+    el.className = 'text-xs text-yellow-400';
+    fetch('/api/tun/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enable: enable})
+    }).then(function(r){return r.json()}).then(function(resp){
+        if (resp.success) {
+            el.textContent = resp.message;
+            el.className = 'text-xs text-green-400';
+            var tunEl = document.getElementById('cfg-tun-mode');
+            if (tunEl) tunEl.textContent = enable ? '已启用' : '未启用';
+        } else {
+            el.textContent = 'Failed: ' + resp.message;
+            el.className = 'text-xs text-red-400';
+            document.getElementById('edit-tun-mode').checked = !enable;
+        }
+    }).catch(function(){
+        el.textContent = 'request failed';
+        el.className = 'text-xs text-red-400';
+        document.getElementById('edit-tun-mode').checked = !enable;
+    });
+}
+function msgLoaded(){return "geo data ready"}
 fetchStatus(); fetchConfig(); fetchLogs();
 setInterval(updateGeoStatus,30000);
 setInterval(fetchStatus, 3000);
