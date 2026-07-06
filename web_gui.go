@@ -349,6 +349,7 @@ const dashboardHTML = `<!DOCTYPE html>
     .status-offline { background: #ef4444; }
     .listen-list { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
     .listen-list div + div { margin-top: 4px; }
+    .hidden-by-mode { display: none !important; }
 </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
@@ -384,7 +385,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="bg-gray-800 rounded-lg p-6 mb-8">
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold">服务器</h2>
-            <div class="flex items-center space-x-2">
+            <div id="server-actions" class="flex items-center space-x-2">
                 <span class="text-gray-400 text-sm">策略:</span>
                 <select id="cfg-strategy-select" class="bg-gray-700 text-white rounded px-2 py-1 text-sm" onchange="changeStrategy()">
                     <option value="failover">故障转移</option>
@@ -437,7 +438,7 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- Config Section -->
-    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+    <div id="global-config-section" class="bg-gray-800 rounded-lg p-6 mb-8">
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold">全局配置</h2>
             <button onclick="editGlobalConfig()" class="px-3 py-1 bg-blue-700 text-white rounded text-sm hover:bg-blue-600">修改</button>
@@ -469,7 +470,7 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- Geo Routing Data -->
-    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+    <div id="geo-section" class="bg-gray-800 rounded-lg p-6 mb-8">
         <h2 class="text-xl font-semibold mb-4">GeoIP / GeoSite</h2>
         <p class="text-gray-400 text-sm mb-4">Upload .dat files — auto hot-reloads routing rules.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -532,6 +533,7 @@ function fetchStatus() {
         if (tunEl) tunEl.textContent = data.tun_mode ? '已启用' : '未启用';
         // Hide TUN card in server mode
         if (data.mode) pageMode = data.mode;
+        applyPageMode(pageMode);
         if (tunEl && tunEl.parentElement) {
             tunEl.parentElement.style.display = (data.mode === 'server') ? 'none' : '';
         }
@@ -708,6 +710,13 @@ function formatListen(s) {
     return String(s).split(',').map(function(v) {
         return '<div>' + escapeHtml(v.trim()) + '</div>';
     }).join('');
+}
+function applyPageMode(mode) {
+    var serverMode = mode === 'server';
+    ['server-actions', 'global-config-section', 'geo-section'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden-by-mode', serverMode);
+    });
 }
 function clearLogs() { document.getElementById('log-container').innerHTML = ''; }
 
