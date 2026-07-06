@@ -69,6 +69,7 @@ func (mp *MultiPool) Start() {
 			srvToken = token
 		}
 		sp.Pool = NewECHPool(sp.Config.URL, sp.Config.Connections, nil, clientID, srvToken)
+		sp.Pool.displayName = sp.Config.Name
 		sp.Pool.Start()
 		sp.State = PoolHealthy
 		sp.Updated = time.Now()

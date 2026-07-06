@@ -346,10 +346,17 @@ func (h *tunConnHandler) handleTCP(r *tcp.ForwarderRequest) {
 			return
 		}
 		log.Printf("[TUN][TCP][proxy] %s -> %s (%s, ch=%d)", conn.RemoteAddr(), proxyTarget, routeReason, channelID)
+		acct := clientStreamAccounting(stream, "TUN", proxyTarget, conn.RemoteAddr().String(), channelID)
 		if initial != nil {
-			stream.Write(initial)
+			n, err := stream.Write(initial)
+			acct.addToStream(int64(n))
+			if err != nil {
+				liveTraffic.close(acct.flow)
+				_ = stream.Close()
+				return
+			}
 		}
-		proxyConnStream(conn, stream)
+		proxyConnStream(conn, stream, acct)
 	}()
 }
 

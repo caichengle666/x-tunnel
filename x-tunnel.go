@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1244,18 +1245,188 @@ func parseHTTPSRecord(data []byte) string {
 var serverSessions sync.Map // map[string]*ClientSession
 
 type WSChannel struct {
-	id      uint64
-	conn    *websocket.Conn
-	session *ClientSession
+	id          uint64
+	conn        *websocket.Conn
+	session     *ClientSession
+	remoteAddr  string
+	connectedAt time.Time
+	bytesIn     int64
+	bytesOut    int64
 }
 
 type ClientSession struct {
 	nextChanID uint64
 
-	clientID string
+	clientID    string
+	connectedAt time.Time
+	bytesIn     int64
+	bytesOut    int64
+	activeFlows int64
 
 	mu       sync.RWMutex
 	channels map[uint64]*WSChannel
+}
+
+type trafficFlow struct {
+	id        uint64
+	side      string
+	kind      string
+	target    string
+	source    string
+	peer      string
+	server    string
+	channel   int
+	startedAt time.Time
+
+	sent          int64
+	recv          int64
+	lastSent      int64
+	lastRecv      int64
+	lastSpeedTime time.Time
+}
+
+type trafficFlowSnapshot struct {
+	ID          uint64 `json:"id"`
+	Side        string `json:"side"`
+	Kind        string `json:"kind"`
+	Target      string `json:"target"`
+	Source      string `json:"source"`
+	Peer        string `json:"peer"`
+	Server      string `json:"server"`
+	Channel     int    `json:"channel"`
+	Sent        int64  `json:"sent"`
+	Recv        int64  `json:"recv"`
+	SentSpeed   int64  `json:"sent_speed"`
+	RecvSpeed   int64  `json:"recv_speed"`
+	DurationSec int64  `json:"duration_sec"`
+}
+
+type trafficRegistry struct {
+	mu     sync.Mutex
+	nextID uint64
+	flows  map[uint64]*trafficFlow
+}
+
+const (
+	maxLiveTrafficFlows     = 512
+	maxTrafficSnapshotFlows = 200
+)
+
+var liveTraffic = &trafficRegistry{flows: make(map[uint64]*trafficFlow)}
+
+func openTrafficFlow(side, kind, target, source, peer, server string, channel int) *trafficFlow {
+	return liveTraffic.open(side, kind, target, source, peer, server, channel)
+}
+
+func (r *trafficRegistry) open(side, kind, target, source, peer, server string, channel int) *trafficFlow {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	f := &trafficFlow{
+		id:            r.nextID,
+		side:          side,
+		kind:          kind,
+		target:        target,
+		source:        source,
+		peer:          peer,
+		server:        server,
+		channel:       channel,
+		startedAt:     now,
+		lastSpeedTime: now,
+	}
+	r.flows[f.id] = f
+	r.trimLocked()
+	return f
+}
+
+func (r *trafficRegistry) trimLocked() {
+	for len(r.flows) > maxLiveTrafficFlows {
+		var oldestID uint64
+		var oldest time.Time
+		for id, f := range r.flows {
+			if oldestID == 0 || f.startedAt.Before(oldest) {
+				oldestID = id
+				oldest = f.startedAt
+			}
+		}
+		if oldestID == 0 {
+			return
+		}
+		delete(r.flows, oldestID)
+	}
+}
+
+func (r *trafficRegistry) close(f *trafficFlow) {
+	if f == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.flows, f.id)
+	r.mu.Unlock()
+}
+
+func (r *trafficRegistry) snapshot(side string) []trafficFlowSnapshot {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]trafficFlowSnapshot, 0, len(r.flows))
+	for _, f := range r.flows {
+		if side != "" && f.side != side {
+			continue
+		}
+		sent := atomic.LoadInt64(&f.sent)
+		recv := atomic.LoadInt64(&f.recv)
+		elapsed := now.Sub(f.lastSpeedTime).Seconds()
+		var sentSpeed, recvSpeed int64
+		if elapsed > 0 {
+			sentSpeed = int64(float64(sent-f.lastSent) / elapsed)
+			recvSpeed = int64(float64(recv-f.lastRecv) / elapsed)
+		}
+		f.lastSent = sent
+		f.lastRecv = recv
+		f.lastSpeedTime = now
+		out = append(out, trafficFlowSnapshot{
+			ID:          f.id,
+			Side:        f.side,
+			Kind:        f.kind,
+			Target:      f.target,
+			Source:      f.source,
+			Peer:        f.peer,
+			Server:      f.server,
+			Channel:     f.channel,
+			Sent:        sent,
+			Recv:        recv,
+			SentSpeed:   sentSpeed,
+			RecvSpeed:   recvSpeed,
+			DurationSec: int64(now.Sub(f.startedAt).Seconds()),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SentSpeed != out[j].SentSpeed {
+			return out[i].SentSpeed > out[j].SentSpeed
+		}
+		if out[i].RecvSpeed != out[j].RecvSpeed {
+			return out[i].RecvSpeed > out[j].RecvSpeed
+		}
+		return out[i].ID > out[j].ID
+	})
+	if len(out) > maxTrafficSnapshotFlows {
+		out = out[:maxTrafficSnapshotFlows]
+	}
+	return out
+}
+
+func (f *trafficFlow) addSent(n int64) {
+	if f != nil && n > 0 {
+		atomic.AddInt64(&f.sent, n)
+	}
+}
+
+func (f *trafficFlow) addRecv(n int64) {
+	if f != nil && n > 0 {
+		atomic.AddInt64(&f.recv, n)
+	}
 }
 
 func getOrCreateClientSession(clientID string) *ClientSession {
@@ -1266,8 +1437,9 @@ func getOrCreateClientSession(clientID string) *ClientSession {
 		serverSessions.Delete(clientID)
 	}
 	s := &ClientSession{
-		clientID: clientID,
-		channels: make(map[uint64]*WSChannel),
+		clientID:    clientID,
+		connectedAt: time.Now(),
+		channels:    make(map[uint64]*WSChannel),
 	}
 	actual, _ := serverSessions.LoadOrStore(clientID, s)
 	if cs, ok := actual.(*ClientSession); ok && cs != nil {
@@ -1277,15 +1449,17 @@ func getOrCreateClientSession(clientID string) *ClientSession {
 	return s
 }
 
-func (s *ClientSession) addChannel(wsConn *websocket.Conn, preferredID uint64) *WSChannel {
+func (s *ClientSession) addChannel(wsConn *websocket.Conn, preferredID uint64, remoteAddr string) *WSChannel {
 	newID := preferredID
 	if newID == 0 {
 		newID = atomic.AddUint64(&s.nextChanID, 1)
 	}
 	ch := &WSChannel{
-		id:      newID,
-		conn:    wsConn,
-		session: s,
+		id:          newID,
+		conn:        wsConn,
+		session:     s,
+		remoteAddr:  remoteAddr,
+		connectedAt: time.Now(),
 	}
 	var replaced *WSChannel
 	s.mu.Lock()
@@ -1405,7 +1579,7 @@ func runWebSocketServer(addr string) {
 			}
 		}
 		session := getOrCreateClientSession(cid)
-		ch := session.addChannel(wsConn, channelID)
+		ch := session.addChannel(wsConn, channelID, clientIP)
 		log.Printf("[服务端] 客户端通道 %d 连接, 客户端ID: %s, IP: %s", ch.id, cid, clientIP)
 		go handleWebSocketChannel(ch)
 	})
@@ -1663,7 +1837,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		}
 		// 回复 1 字节成功标记
 		_, _ = stream.Write([]byte{0x00})
-		proxyConnStream(tcpConn, stream)
+		proxyConnStream(tcpConn, stream, serverStreamAccounting(session, ch, "TCP", target))
 		log.Printf("[服务端] 客户ID:%s TCP 关闭: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 	case streamKindUDP:
 		log.Printf("[服务端] 客户ID:%s SOCKS5 UDP 访问: %s, 通道:%d", shortID(session.clientID), target, ch.id)
@@ -1741,6 +1915,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 
 type ECHPool struct {
 	wsServerAddr  string
+	displayName   string
 	connectionNum int
 	targetIPs     []string
 	clientID      string
@@ -2021,19 +2196,115 @@ func proxyConn(a net.Conn, b net.Conn) {
 	<-errCh
 }
 
-func proxyConnStream(c net.Conn, stream *smux.Stream) {
-	var sent, recv int64
+type streamAccounting struct {
+	flow       *trafficFlow
+	pool       *ECHPool
+	session    *ClientSession
+	channel    *WSChannel
+	serverSide bool
+}
+
+type countingWriter struct {
+	w       io.Writer
+	onWrite func(int64)
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 && w.onWrite != nil {
+		w.onWrite(int64(n))
+	}
+	return n, err
+}
+
+func (a *streamAccounting) addToStream(n int64) {
+	if n <= 0 || a == nil {
+		return
+	}
+	if a.serverSide {
+		a.flow.addRecv(n)
+		if a.session != nil {
+			atomic.AddInt64(&a.session.bytesOut, n)
+		}
+		if a.channel != nil {
+			atomic.AddInt64(&a.channel.bytesOut, n)
+		}
+		return
+	}
+	a.flow.addSent(n)
+	if a.pool != nil {
+		atomic.AddInt64(&a.pool.bytesSent, n)
+	}
+}
+
+func (a *streamAccounting) addFromStream(n int64) {
+	if n <= 0 || a == nil {
+		return
+	}
+	if a.serverSide {
+		a.flow.addSent(n)
+		if a.session != nil {
+			atomic.AddInt64(&a.session.bytesIn, n)
+		}
+		if a.channel != nil {
+			atomic.AddInt64(&a.channel.bytesIn, n)
+		}
+		return
+	}
+	a.flow.addRecv(n)
+	if a.pool != nil {
+		atomic.AddInt64(&a.pool.bytesRecv, n)
+	}
+}
+
+func serverNameForPool(p *ECHPool) string {
+	if p == nil {
+		return ""
+	}
+	if p.displayName != "" {
+		return p.displayName
+	}
+	return p.wsServerAddr
+}
+
+func clientStreamAccounting(stream *smux.Stream, kind, target, source string, channel int) *streamAccounting {
+	pool, _ := streamUserdata(stream)
+	flow := openTrafficFlow("client", kind, target, source, "", serverNameForPool(pool), channel)
+	return &streamAccounting{flow: flow, pool: pool}
+}
+
+func serverStreamAccounting(session *ClientSession, ch *WSChannel, kind, target string) *streamAccounting {
+	source := ""
+	peer := ""
+	channel := 0
+	if session != nil {
+		source = session.clientID
+		atomic.AddInt64(&session.activeFlows, 1)
+	}
+	if ch != nil {
+		peer = ch.remoteAddr
+		channel = int(ch.id)
+	}
+	flow := openTrafficFlow("server", kind, target, source, peer, "", channel)
+	return &streamAccounting{flow: flow, session: session, channel: ch, serverSide: true}
+}
+
+func proxyConnStream(c net.Conn, stream *smux.Stream, acct *streamAccounting) {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(stream, c)
-		atomic.StoreInt64(&sent, n)
+		_, _ = io.Copy(countingWriter{
+			w:       stream,
+			onWrite: func(n int64) { acct.addToStream(n) },
+		}, c)
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(c, stream)
-		atomic.StoreInt64(&recv, n)
+		_, _ = io.Copy(countingWriter{
+			w:       c,
+			onWrite: func(n int64) { acct.addFromStream(n) },
+		}, stream)
 	}()
 
 	// 等待任一方向完成
@@ -2041,14 +2312,13 @@ func proxyConnStream(c net.Conn, stream *smux.Stream) {
 	go func() { wg.Wait(); close(done) }()
 	<-done
 
-	// 更新统计
-	if sp, ok := streamUserdata(stream); ok {
-		atomic.AddInt64(&sp.bytesSent, atomic.LoadInt64(&sent))
-		atomic.AddInt64(&sp.bytesRecv, atomic.LoadInt64(&recv))
-	}
-
-	// 清理 stream 映射
 	poolStreamMap.Delete(stream)
+	if acct != nil {
+		if acct.serverSide && acct.session != nil {
+			atomic.AddInt64(&acct.session.activeFlows, -1)
+		}
+		liveTraffic.close(acct.flow)
+	}
 
 	// 立即关闭双方
 	_ = stream.Close()
@@ -2330,7 +2600,7 @@ func handleLocalTCP(c net.Conn, target string) {
 	}
 	logClientConnEvent(c, "TCP转发", target, decision, true)
 	defer logClientConnEvent(c, "TCP转发", target, decision, false)
-	proxyConnStream(c, stream)
+	proxyConnStream(c, stream, clientStreamAccounting(stream, "TCP", target, clientSourceAddr(c), decision))
 }
 
 // dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑
@@ -2671,7 +2941,7 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 	}
 	logClientConnEvent(c, "SOCKS5", target, decision, true)
 	defer logClientConnEvent(c, "SOCKS5", target, decision, false)
-	proxyConnStream(c, stream)
+	proxyConnStream(c, stream, clientStreamAccounting(stream, "SOCKS5", target, clientSourceAddr(c), decision))
 }
 
 func handleSOCKS5UDP(c net.Conn, cfgp *ProxyConfig) {
@@ -3022,15 +3292,19 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 		_ = stream.Close()
 		return
 	}
+	acct := clientStreamAccounting(stream, "HTTP", target, clientSourceAddr(c), decision)
 	if len(first) > 0 {
-		if _, err := stream.Write(first); err != nil {
+		n, err := stream.Write(first)
+		acct.addToStream(int64(n))
+		if err != nil {
 			_ = stream.Close()
+			liveTraffic.close(acct.flow)
 			return
 		}
 	}
 	logClientConnEvent(c, "HTTP", target, decision, true)
 	defer logClientConnEvent(c, "HTTP", target, decision, false)
-	proxyConnStream(c, stream)
+	proxyConnStream(c, stream, acct)
 }
 
 type countingStream struct {

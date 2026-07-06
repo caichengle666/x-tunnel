@@ -3,7 +3,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"net"
+	"net/url"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +26,11 @@ var (
 	tunStack  *gVisorStack
 
 	localListenersStarted bool
+)
+
+var (
+	controlPlaneRouteMu  sync.Mutex
+	controlPlaneRouteIPs []string
 )
 
 // IsTunActive returns true if TUN is currently running
@@ -64,6 +74,7 @@ func stopTun() {
 		tunDevice.Close()
 		tunDevice = nil
 	}
+	removeControlPlaneHostRoutes()
 	// Close gVisor stack last (may panic on active connections)
 	if tunStack != nil {
 		tunStack.gStack.Close()
@@ -85,6 +96,7 @@ func softStopTun() {
 		tunDevice.Close()
 		tunDevice = nil
 	}
+	removeControlPlaneHostRoutes()
 	// Don't close the gVisor stack - it may panic on active TCP connections
 	// The stack will be cleaned up when the process exits
 	tunActive = false
@@ -122,6 +134,113 @@ func startLocalListeners() {
 	}
 }
 
+func installControlPlaneHostRoutes() {
+	if physIfaceIndex <= 0 {
+		return
+	}
+	gateway, err := defaultGatewayForInterface(physIfaceIndex)
+	if err != nil {
+		log.Printf("[TUN] control-plane route skipped: %v", err)
+		return
+	}
+	hosts := controlPlaneHosts()
+	added := 0
+	seen := map[string]bool{}
+	for _, host := range hosts {
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			log.Printf("[TUN] control-plane resolve failed %s: %v", host, err)
+			continue
+		}
+		for _, ip := range ips {
+			ip4 := ip.To4()
+			if ip4 == nil {
+				continue
+			}
+			ipStr := ip4.String()
+			if seen[ipStr] {
+				continue
+			}
+			seen[ipStr] = true
+			if err := addControlPlaneHostRoute(ipStr, gateway, physIfaceIndex); err != nil {
+				log.Printf("[TUN] control-plane route add failed %s via %s if %d: %v", ipStr, gateway, physIfaceIndex, err)
+				continue
+			}
+			added++
+		}
+	}
+	if added > 0 {
+		log.Printf("[TUN] installed %d control-plane host routes via %s if %d", added, gateway, physIfaceIndex)
+	}
+}
+
+func controlPlaneHosts() []string {
+	var hosts []string
+	addHost := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		host := u.Hostname()
+		if host != "" {
+			hosts = append(hosts, host)
+		}
+	}
+	addHost(forwardAddr)
+	for _, srv := range tunnelConfig.Servers {
+		addHost(srv.URL)
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
+func defaultGatewayForInterface(ifaceIndex int) (string, error) {
+	ps := fmt.Sprintf("(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceIndex %d | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 -ExpandProperty NextHop)", ifaceIndex)
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).Output()
+	if err != nil {
+		return "", err
+	}
+	gateway := strings.TrimSpace(string(out))
+	if gateway == "" || gateway == "0.0.0.0" {
+		return "", fmt.Errorf("no default gateway on interface %d", ifaceIndex)
+	}
+	return gateway, nil
+}
+
+func addControlPlaneHostRoute(ip, gateway string, ifaceIndex int) error {
+	args := []string{"ADD", ip, "MASK", "255.255.255.255", gateway, "METRIC", "1", "IF", strconv.Itoa(ifaceIndex)}
+	if out, err := exec.Command("route", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	controlPlaneRouteMu.Lock()
+	controlPlaneRouteIPs = append(controlPlaneRouteIPs, ip)
+	controlPlaneRouteMu.Unlock()
+	return nil
+}
+
+func removeControlPlaneHostRoutes() {
+	controlPlaneRouteMu.Lock()
+	ips := append([]string(nil), controlPlaneRouteIPs...)
+	controlPlaneRouteIPs = nil
+	controlPlaneRouteMu.Unlock()
+	for _, ip := range ips {
+		_ = exec.Command("route", "DELETE", ip).Run()
+	}
+}
+
 // runTUNModeIfNeeded 是 TUN 模式的完整入口，仅在 Windows 上被调用。
 func runTUNModeIfNeeded() {
 	// Always ensure local listeners are started (only once)
@@ -147,6 +266,8 @@ func runTUNModeIfNeeded() {
 	} else {
 		log.Printf("[客户端] 探测物理网卡索引失败")
 	}
+
+	installControlPlaneHostRoutes()
 
 	loadGeoIP()
 	loadGeoSite()

@@ -132,6 +132,71 @@ func countActiveClients() int {
 	})
 	return count
 }
+
+type serverChannelStatus struct {
+	ID          uint64 `json:"id"`
+	RemoteAddr  string `json:"remote_addr"`
+	BytesIn     int64  `json:"bytes_in"`
+	BytesOut    int64  `json:"bytes_out"`
+	DurationSec int64  `json:"duration_sec"`
+}
+
+type serverClientStatus struct {
+	ClientID    string                `json:"client_id"`
+	Channels    int                   `json:"channels"`
+	RemoteAddrs []string              `json:"remote_addrs"`
+	ActiveFlows int64                 `json:"active_flows"`
+	BytesIn     int64                 `json:"bytes_in"`
+	BytesOut    int64                 `json:"bytes_out"`
+	DurationSec int64                 `json:"duration_sec"`
+	ChannelList []serverChannelStatus `json:"channel_list"`
+}
+
+func serverClientStats() []serverClientStatus {
+	now := time.Now()
+	stats := []serverClientStatus{}
+	serverSessions.Range(func(_, v any) bool {
+		cs, ok := v.(*ClientSession)
+		if !ok || cs == nil {
+			return true
+		}
+		cs.mu.RLock()
+		remoteSeen := map[string]bool{}
+		remotes := []string{}
+		channels := []serverChannelStatus{}
+		for _, ch := range cs.channels {
+			if ch == nil {
+				continue
+			}
+			if ch.remoteAddr != "" && !remoteSeen[ch.remoteAddr] {
+				remoteSeen[ch.remoteAddr] = true
+				remotes = append(remotes, ch.remoteAddr)
+			}
+			channels = append(channels, serverChannelStatus{
+				ID:          ch.id,
+				RemoteAddr:  ch.remoteAddr,
+				BytesIn:     atomic.LoadInt64(&ch.bytesIn),
+				BytesOut:    atomic.LoadInt64(&ch.bytesOut),
+				DurationSec: int64(now.Sub(ch.connectedAt).Seconds()),
+			})
+		}
+		stat := serverClientStatus{
+			ClientID:    cs.clientID,
+			Channels:    len(cs.channels),
+			RemoteAddrs: remotes,
+			ActiveFlows: atomic.LoadInt64(&cs.activeFlows),
+			BytesIn:     atomic.LoadInt64(&cs.bytesIn),
+			BytesOut:    atomic.LoadInt64(&cs.bytesOut),
+			DurationSec: int64(now.Sub(cs.connectedAt).Seconds()),
+			ChannelList: channels,
+		}
+		cs.mu.RUnlock()
+		stats = append(stats, stat)
+		return true
+	})
+	return stats
+}
+
 func statusJSON() map[string]interface{} {
 	result := map[string]interface{}{
 		"uptime":     "running",
@@ -147,6 +212,8 @@ func statusJSON() map[string]interface{} {
 		result["tunnel"] = "服务端模式"
 		result["healthy"] = true
 		result["clients"] = countActiveClients()
+		result["server_clients"] = serverClientStats()
+		result["active_flows"] = liveTraffic.snapshot("server")
 		return result
 	}
 
@@ -196,6 +263,7 @@ func statusJSON() map[string]interface{} {
 
 	result["servers"] = echPool.Servers()
 	result["channels"] = channels
+	result["active_flows"] = liveTraffic.snapshot("client")
 	result["healthy"] = echPool.HasHealthyChannel()
 	geoIPCount := 0
 	if geoIPMatcher != nil {
@@ -381,6 +449,46 @@ const serverDashboardHTML = `<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <h2 class="text-xl font-semibold mb-4">Connected Clients</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-gray-400 border-b border-gray-700">
+                        <th class="text-left py-2 px-3">Client</th>
+                        <th class="text-left py-2 px-3">Remote IP</th>
+                        <th class="text-left py-2 px-3">Channels</th>
+                        <th class="text-left py-2 px-3">Active</th>
+                        <th class="text-left py-2 px-3">Up</th>
+                        <th class="text-left py-2 px-3">Down</th>
+                        <th class="text-left py-2 px-3">Age</th>
+                    </tr>
+                </thead>
+                <tbody id="server-clients-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <h2 class="text-xl font-semibold mb-4">Active Flows</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-gray-400 border-b border-gray-700">
+                        <th class="text-left py-2 px-3">Kind</th>
+                        <th class="text-left py-2 px-3">Target</th>
+                        <th class="text-left py-2 px-3">Client</th>
+                        <th class="text-left py-2 px-3">Channel</th>
+                        <th class="text-left py-2 px-3">Up</th>
+                        <th class="text-left py-2 px-3">Down</th>
+                        <th class="text-left py-2 px-3">Age</th>
+                    </tr>
+                </thead>
+                <tbody id="server-flows-body"></tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="bg-gray-800 rounded-lg p-6">
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold">实时日志</h2>
@@ -396,6 +504,60 @@ function escapeHtml(s) {
         return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
 }
+function formatBytes(b) {
+    b = Number(b || 0);
+    if (b < 1024) return b + 'B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + 'KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(1) + 'MB';
+    return (b / 1073741824).toFixed(2) + 'GB';
+}
+function formatAge(sec) {
+    sec = Number(sec || 0);
+    if (sec < 60) return sec + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+    return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+function renderServerClients(items) {
+    var body = document.getElementById('server-clients-body');
+    if (!body) return;
+    if (!items || !items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="py-4 px-3 text-center text-gray-500">No clients</td></tr>';
+        return;
+    }
+    body.innerHTML = items.map(function(c) {
+        return '<tr class="border-b border-gray-700/50">'
+            + '<td class="py-2 px-3 font-mono">' + escapeHtml(c.client_id) + '</td>'
+            + '<td class="py-2 px-3">' + escapeHtml((c.remote_addrs || []).join(', ')) + '</td>'
+            + '<td class="py-2 px-3">' + (c.channels || 0) + '</td>'
+            + '<td class="py-2 px-3">' + (c.active_flows || 0) + '</td>'
+            + '<td class="py-2 px-3">' + formatBytes(c.bytes_in) + '</td>'
+            + '<td class="py-2 px-3">' + formatBytes(c.bytes_out) + '</td>'
+            + '<td class="py-2 px-3">' + formatAge(c.duration_sec) + '</td>'
+            + '</tr>';
+    }).join('');
+}
+function renderServerFlows(items) {
+    var body = document.getElementById('server-flows-body');
+    if (!body) return;
+    if (!items || !items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="py-4 px-3 text-center text-gray-500">No active flows</td></tr>';
+        return;
+    }
+    var total = items.length;
+    items = items.slice(0, 100);
+    var note = total > items.length ? '<tr><td colspan="7" class="py-2 px-3 text-center text-gray-500">Showing ' + items.length + ' of ' + total + ' active flows</td></tr>' : '';
+    body.innerHTML = items.map(function(f) {
+        return '<tr class="border-b border-gray-700/50">'
+            + '<td class="py-2 px-3">' + escapeHtml(f.kind) + '</td>'
+            + '<td class="py-2 px-3 font-mono">' + escapeHtml(f.target) + '</td>'
+            + '<td class="py-2 px-3 font-mono">' + escapeHtml(f.source) + '</td>'
+            + '<td class="py-2 px-3">#' + (f.channel || 0) + '</td>'
+            + '<td class="py-2 px-3">' + formatBytes(f.sent) + ' (' + formatBytes(f.sent_speed) + '/s)</td>'
+            + '<td class="py-2 px-3">' + formatBytes(f.recv) + ' (' + formatBytes(f.recv_speed) + '/s)</td>'
+            + '<td class="py-2 px-3">' + formatAge(f.duration_sec) + '</td>'
+            + '</tr>';
+    }).join('') + note;
+}
 function fetchStatus() {
     fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
         document.getElementById('active-clients').textContent = data.clients || 0;
@@ -403,6 +565,8 @@ function fetchStatus() {
         document.getElementById('health-status').className = data.healthy ? 'text-2xl font-bold text-green-400' : 'text-2xl font-bold text-red-400';
         document.getElementById('listen-addr').textContent = data.listen || '--';
         document.getElementById('web-listen').textContent = data.web_listen || '--';
+        renderServerClients(data.server_clients || []);
+        renderServerFlows(data.active_flows || []);
     }).catch(function(){});
 }
 function fetchConfig() {
@@ -567,6 +731,27 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Active Flows -->
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <h2 class="text-xl font-semibold mb-4">Active Flows</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-gray-400 border-b border-gray-700">
+                        <th class="text-left py-2 px-3">Kind</th>
+                        <th class="text-left py-2 px-3">Target</th>
+                        <th class="text-left py-2 px-3">Server</th>
+                        <th class="text-left py-2 px-3">Channel</th>
+                        <th class="text-left py-2 px-3">Up</th>
+                        <th class="text-left py-2 px-3">Down</th>
+                        <th class="text-left py-2 px-3">Age</th>
+                    </tr>
+                </thead>
+                <tbody id="client-flows-body"></tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- Geo Routing Data -->
     <div id="geo-section" class="bg-gray-800 rounded-lg p-6 mb-8">
         <h2 class="text-xl font-semibold mb-4">GeoIP / GeoSite</h2>
@@ -641,13 +826,43 @@ function fetchStatus() {
         
         // Render servers
         renderServers(data);
+        renderClientFlows(data.active_flows || []);
     }).catch(() => {});
 }
 function formatBytes(b) {
+    b = Number(b || 0);
     if (b < 1024) return b + 'B';
     if (b < 1048576) return (b/1024).toFixed(1) + 'KB';
     if (b < 1073741824) return (b/1048576).toFixed(1) + 'MB';
     return (b/1073741824).toFixed(2) + 'GB';
+}
+function formatAge(sec) {
+    sec = Number(sec || 0);
+    if (sec < 60) return sec + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+    return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+function renderClientFlows(items) {
+    var body = document.getElementById('client-flows-body');
+    if (!body) return;
+    if (!items || !items.length) {
+        body.innerHTML = '<tr><td colspan="7" class="py-4 px-3 text-center text-gray-500">No active flows</td></tr>';
+        return;
+    }
+    var total = items.length;
+    items = items.slice(0, 100);
+    var note = total > items.length ? '<tr><td colspan="7" class="py-2 px-3 text-center text-gray-500">Showing ' + items.length + ' of ' + total + ' active flows</td></tr>' : '';
+    body.innerHTML = items.map(function(f) {
+        return '<tr class="border-b border-gray-700/50">'
+            + '<td class="py-2 px-3">' + escapeHtml(f.kind) + '</td>'
+            + '<td class="py-2 px-3 font-mono">' + escapeHtml(f.target) + '</td>'
+            + '<td class="py-2 px-3">' + escapeHtml(f.server || '--') + '</td>'
+            + '<td class="py-2 px-3">#' + (f.channel || 0) + '</td>'
+            + '<td class="py-2 px-3">' + formatBytes(f.sent) + ' (' + formatBytes(f.sent_speed) + '/s)</td>'
+            + '<td class="py-2 px-3">' + formatBytes(f.recv) + ' (' + formatBytes(f.recv_speed) + '/s)</td>'
+            + '<td class="py-2 px-3">' + formatAge(f.duration_sec) + '</td>'
+            + '</tr>';
+    }).join('') + note;
 }
 
 function renderServers(data) {
