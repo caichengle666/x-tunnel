@@ -933,6 +933,7 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		tunnelConfig.TunMode = *req.TunMode
 		tunMode = *req.TunMode
 		changes = append(changes, "tun_mode")
+		reconnectNeeded = true
 	}
 	if req.Listen != "" && req.Listen != tunnelConfig.Listen {
 		log.Printf("[热加载] listen: %s -> %s", tunnelConfig.Listen, req.Listen)
@@ -989,67 +990,8 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		// TUN mode requires new elevated process
-		if tunMode {
-			log.Printf("[热加载] TUN 模式启动新进程提权...")
-			spawnNewProcess(true)
-			return
-		}
-
-		log.Printf("[热加载] 正在重启客户端...")
-		reconnectMu.Lock()
-		reconnectNeeded = false
-		reconnectMu.Unlock()
-
-		time.Sleep(1 * time.Second)
-
-		if echPool != nil {
-			echPool.Stop()
-			echPool = nil
-		}
-		stopAllListeners()
-
-		// Rebuild from current tunnelConfig (supports multi-server)
-		tunnelConfigMu.RLock()
-		hasServers := len(tunnelConfig.Servers) > 0
-		tunnelConfigMu.RUnlock()
-		if hasServers {
-			for i := range tunnelConfig.Servers {
-				if tunnelConfig.Servers[i].Name == "" {
-					tunnelConfig.Servers[i].Name = tunnelConfig.Servers[i].URL
-				}
-				if tunnelConfig.Servers[i].Connections <= 0 {
-					tunnelConfig.Servers[i].Connections = tunnelConfig.Connections
-				}
-				if tunnelConfig.Servers[i].Connections <= 0 {
-					tunnelConfig.Servers[i].Connections = 3
-				}
-			}
-			echPool = NewMultiPool(&tunnelConfig)
-			echPool.Start()
-			startListeners()
-			if tunMode {
-				go runTUNModeIfNeeded()
-			}
-			serverNames := make([]string, 0, len(tunnelConfig.Servers))
-			for _, s := range tunnelConfig.Servers {
-				serverNames = append(serverNames, s.Name)
-			}
-			log.Printf("[热加载] 客户端重启完成，%d 台服务器: %v", len(tunnelConfig.Servers), serverNames)
-		} else if forwardAddr != "" {
-			tunnelConfig.Servers = []ServerConfig{{Name: forwardAddr, URL: forwardAddr, Token: token, Connections: connectionNum}}
-			if tunnelConfig.Strategy == "" {
-				tunnelConfig.Strategy = "failover"
-			}
-			echPool = NewMultiPool(&tunnelConfig)
-			echPool.Start()
-			if tunMode {
-				go runTUNModeIfNeeded()
-			}
-			log.Printf("[热加载] 客户端重启完成（单服务器模式）: %s", forwardAddr)
-		}
-	}()
+	log.Printf("[热加载] 正在重启客户端（新进程）...")
+	go spawnNewProcess(tunMode)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1370,6 +1312,9 @@ func downloadGeoFile(url, filename string) error {
 	f.Close()
 	return os.Rename(tmpName, filename)
 }
+
+
+
 
 
 
