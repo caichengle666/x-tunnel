@@ -213,6 +213,10 @@ func statusJSON() map[string]interface{} {
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if echPool == nil {
+		w.Write([]byte(serverDashboardHTML))
+		return
+	}
 	w.Write([]byte(dashboardHTML))
 }
 
@@ -333,6 +337,100 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"ech_domain":        echDomain,
 	})
 }
+
+const serverDashboardHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>x-tunnel 服务端</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .log-line { font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.4; }
+    .listen-text { overflow-wrap: anywhere; }
+</style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+<div class="max-w-5xl mx-auto p-6">
+    <h1 class="text-3xl font-bold mb-2 text-blue-400">x-tunnel 服务端</h1>
+    <p class="text-gray-400 mb-8">只读状态页。服务端配置请通过 Docker / 命令行管理。</p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+        <div class="bg-gray-800 rounded-lg p-4">
+            <div class="text-gray-400 text-sm">活动通道</div>
+            <div class="text-2xl font-bold" id="active-clients">--</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4">
+            <div class="text-gray-400 text-sm">健康状态</div>
+            <div class="text-2xl font-bold text-green-400" id="health-status">--</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 xl:col-span-2">
+            <div class="text-gray-400 text-sm">监听地址</div>
+            <div class="font-mono listen-text" id="listen-addr">--</div>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg p-6 mb-8">
+        <h2 class="text-xl font-semibold mb-4">服务信息</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div><span class="text-gray-400">WebSocket endpoint:</span> <span class="font-mono">/tunnel</span></div>
+            <div><span class="text-gray-400">Token:</span> <span id="token-status">已设置</span></div>
+            <div><span class="text-gray-400">模式:</span> <span class="font-mono">server</span></div>
+            <div><span class="text-gray-400">Web:</span> <span class="font-mono" id="web-listen">--</span></div>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg p-6">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold">实时日志</h2>
+            <button onclick="clearLogs()" class="px-3 py-1 bg-gray-700 rounded text-sm hover:bg-gray-600">清空</button>
+        </div>
+        <div id="log-container" class="bg-black rounded-lg p-4 h-64 overflow-y-auto"></div>
+    </div>
+</div>
+
+<script>
+function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, function(c) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+}
+function fetchStatus() {
+    fetch('/api/status').then(function(r){ return r.json(); }).then(function(data) {
+        document.getElementById('active-clients').textContent = data.clients || 0;
+        document.getElementById('health-status').textContent = data.healthy ? '✓ 正常' : '✗ 异常';
+        document.getElementById('health-status').className = data.healthy ? 'text-2xl font-bold text-green-400' : 'text-2xl font-bold text-red-400';
+        document.getElementById('listen-addr').textContent = data.listen || '--';
+        document.getElementById('web-listen').textContent = data.web_listen || '--';
+    }).catch(function(){});
+}
+function fetchConfig() {
+    fetch('/api/config').then(function(r){ return r.json(); }).then(function(data) {
+        document.getElementById('token-status').textContent = data.token ? '已设置' : '未设置';
+    }).catch(function(){});
+}
+function fetchLogs() {
+    fetch('/api/logs').then(function(r){ return r.json(); }).then(function(logs) {
+        var html = logs.map(function(line) {
+            return '<div class="log-line text-gray-300">' + escapeHtml(line) + '</div>';
+        }).join('');
+        var box = document.getElementById('log-container');
+        box.innerHTML = html;
+        box.scrollTop = box.scrollHeight;
+    }).catch(function(){});
+}
+function clearLogs() {
+    document.getElementById('log-container').innerHTML = '';
+}
+fetchStatus();
+fetchConfig();
+fetchLogs();
+setInterval(fetchStatus, 2000);
+setInterval(fetchLogs, 2000);
+</script>
+</body>
+</html>`
 
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
