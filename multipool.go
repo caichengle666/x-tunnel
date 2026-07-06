@@ -187,6 +187,10 @@ func (mp *MultiPool) pickLatency() *ServerPool {
 
 // OpenStream 按策略打开一个 TCP 流
 func (mp *MultiPool) OpenStream(target string) (*smux.Stream, int, int, error) {
+	if mp.strategy == "failover" {
+		return mp.openStreamFailover(target)
+	}
+
 	sp := mp.PickServer()
 	if sp == nil {
 		return nil, 0, 0, errors.New("没有可用的服务器")
@@ -197,15 +201,38 @@ func (mp *MultiPool) OpenStream(target string) (*smux.Stream, int, int, error) {
 	if pool == nil {
 		return nil, 0, 0, errors.New("连接池未初始化")
 	}
-	stream, idx, decision, err := pool.openTCPStream(target)
-	if err != nil && mp.strategy == "failover" && idx >= 0 {
-		// 失败时标记降级，尝试下一个服务器
+	return pool.openTCPStream(target)
+}
+
+func (mp *MultiPool) openStreamFailover(target string) (*smux.Stream, int, int, error) {
+	maxAttempts := len(mp.servers)
+	if maxAttempts == 0 {
+		return nil, 0, 0, errors.New("没有可用的服务器")
+	}
+
+	var lastErr error
+	for _, sp := range mp.servers {
+		sp.mu.RLock()
+		state := sp.State
+		pool := sp.Pool
+		sp.mu.RUnlock()
+		if state == PoolDead || pool == nil || !pool.HasHealthyChannel() {
+			lastErr = errors.New("连接池未初始化")
+			continue
+		}
+		stream, idx, decision, err := pool.openTCPStream(target)
+		if err == nil || idx < 0 {
+			return stream, idx, decision, err
+		}
+		lastErr = err
 		sp.mu.Lock()
 		sp.State = PoolDegraded
 		sp.mu.Unlock()
-		return mp.OpenStream(target)
 	}
-	return stream, idx, decision, err
+	if lastErr != nil {
+		return nil, 0, 0, lastErr
+	}
+	return nil, 0, 0, errors.New("没有可用的服务器")
 }
 
 // OpenUDPStream 按策略打开一个 UDP 流
@@ -274,11 +301,19 @@ func (mp *MultiPool) Servers() []ServerStatus {
 		}
 		channels := 0
 		healthy := false
+		sent := int64(0)
+		recv := int64(0)
+		sentSpeed := int64(0)
+		recvSpeed := int64(0)
 		if sp.Pool != nil {
 			healthy = sp.Pool.HasHealthyChannel()
 			if sp.Pool.smuxConns != nil {
 				channels = len(sp.Pool.smuxConns)
 			}
+			sent = atomic.LoadInt64(&sp.Pool.bytesSent)
+			recv = atomic.LoadInt64(&sp.Pool.bytesRecv)
+			sentSpeed = atomic.LoadInt64(&sp.Pool.sentSpeed)
+			recvSpeed = atomic.LoadInt64(&sp.Pool.recvSpeed)
 		}
 		sp.mu.RUnlock()
 		result = append(result, ServerStatus{
@@ -289,10 +324,10 @@ func (mp *MultiPool) Servers() []ServerStatus {
 			Channels:  channels,
 			Healthy:   healthy,
 			Updated:   sp.Updated,
-			Sent:      atomic.LoadInt64(&sp.Pool.bytesSent),
-			Recv:      atomic.LoadInt64(&sp.Pool.bytesRecv),
-			SentSpeed: atomic.LoadInt64(&sp.Pool.sentSpeed),
-			RecvSpeed: atomic.LoadInt64(&sp.Pool.recvSpeed),
+			Sent:      sent,
+			Recv:      recv,
+			SentSpeed: sentSpeed,
+			RecvSpeed: recvSpeed,
 		})
 	}
 	return result
