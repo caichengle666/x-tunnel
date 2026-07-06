@@ -1,0 +1,12 @@
+.DS_Store
+*.exe
+*.exe~
+*.log
+wintun.dll
+test.vbs
+run-admin.cmd
+run-as-admin.vbs
+run-tun.vbs
+start-admin.bat
+start-admin.ps1
+start-admin.vbs
