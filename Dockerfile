@@ -5,7 +5,8 @@
 
 FROM golang:1.25-alpine AS builder
 
-ENV GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 
 RUN apk add --no-cache ca-certificates git
 
@@ -27,5 +28,7 @@ USER xtunnel
 
 WORKDIR /app
 COPY --from=builder /build/x-tunnel /app/x-tunnel
+
+EXPOSE 8090
 
 ENTRYPOINT ["/app/x-tunnel"]

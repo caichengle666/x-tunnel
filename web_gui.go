@@ -235,6 +235,14 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(logs)
 }
 
+func rejectServerMode(w http.ResponseWriter) bool {
+	if echPool != nil {
+		return false
+	}
+	http.Error(w, "服务端模式不支持此管理操作", http.StatusForbidden)
+	return true
+}
+
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	tunnelConfigMu.RLock()
@@ -989,6 +997,9 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
 		return
 	}
+	if rejectServerMode(w) {
+		return
+	}
 
 	log.Printf("[热加载] 正在重启客户端（新进程）...")
 	go spawnNewProcess(tunMode)
@@ -1005,6 +1016,9 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 func handleAddServer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
+		return
+	}
+	if rejectServerMode(w) {
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -1048,6 +1062,9 @@ func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
+	if rejectServerMode(w) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
 		Index  int          `json:"index"`
@@ -1088,6 +1105,9 @@ func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
+	if rejectServerMode(w) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
 		Index int `json:"index"`
@@ -1123,6 +1143,9 @@ func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
+	if rejectServerMode(w) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	if len(body) > 0 {
 		var newCfg TunnelConfig
@@ -1156,6 +1179,9 @@ func saveConfigToFile() error {
 func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
+		return
+	}
+	if rejectServerMode(w) {
 		return
 	}
 	if err := r.ParseMultipartForm(100 << 20); err != nil {
@@ -1207,6 +1233,9 @@ func handleGeoReload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
+	if rejectServerMode(w) {
+		return
+	}
 	directRules = nil
 	proxyRules = nil
 	geoIPMatcher = nil
@@ -1235,6 +1264,9 @@ var geoUpgradeMirrors = map[string][]string{
 func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
+		return
+	}
+	if rejectServerMode(w) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -1,36 +1,33 @@
-# =============================================================================
 # x-tunnel Server - Docker Compose
-# 支持 Cloudflare Tunnel：一个端口同时提供 WebSocket 和 Web 管理面板
+# One port serves both WebSocket tunnel traffic and the server status page.
 #
-# 使用方法:
-#   1. 设置环境变量 TOKEN 和 CIDR
-#   2. docker compose up -d
+# Required:
+#   TOKEN=your-secret docker compose up -d
 #
-# 客户端连接: wss://your-domain.com/tunnel
-# Web 面板:    https://your-domain.com/
-# =============================================================================
+# Optional:
+#   CIDR=0.0.0.0/0
+#   PORT=8090
 
 services:
   tunnel:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/caichengle666/x-tunnel:latest
+    # For local development builds, replace image with:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: xtunnel
     restart: always
     ports:
-      - "8090:8090"
-    environment:
-      - TOKEN=
-      - CIDR=0.0.0.0/0
+      - "${PORT:-8090}:8090"
     command:
       - -l
       - ws://0.0.0.0:8090/tunnel
       - -web
       - :8090
       - -token
-      - ${TOKEN}
+      - ${TOKEN:?TOKEN is required}
       - -cidr
-      - ${CIDR}
+      - ${CIDR:-0.0.0.0/0}
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8090"]
       interval: 30s
