@@ -27,7 +27,9 @@ func spawnNewProcess(desiredTun bool) {
 	argStr := strings.Join(args, " ")
 
 	if desiredTun {
-		log.Printf("[热加载] TUN 模式，请求管理员权限...")
+		log.Printf("[热加载] TUN 模式，释放端口并请求管理员权限...")
+		stopAllListeners()
+		time.Sleep(500 * time.Millisecond)
 		verb, _ := windows.UTF16PtrFromString("runas")
 		file, _ := windows.UTF16PtrFromString(exe)
 		params, _ := windows.UTF16PtrFromString(argStr)
@@ -39,6 +41,7 @@ func spawnNewProcess(desiredTun bool) {
 			return
 		}
 		log.Printf("[热加载] 管理员进程已请求")
+		time.Sleep(800 * time.Millisecond)
 		log.Printf("[热加载] 当前进程退出")
 		os.Exit(0)
 	}

@@ -1,0 +1,11 @@
+@echo off
+cd /d "%~dp0"
+title x-tunnel
+echo [x-tunnel] Web GUI: http://localhost:9090
+echo ???? = ????
+echo TUN ??? Web GUI ???????????
+echo ================================
+x-tunnel-new.exe -config config.json -web :9090
+echo.
+echo ?????
+pause

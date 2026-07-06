@@ -990,6 +990,13 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		// TUN mode requires new elevated process
+		if tunMode {
+			log.Printf("[热加载] TUN 模式启动新进程提权...")
+			spawnNewProcess(true)
+			return
+		}
+
 		log.Printf("[热加载] 正在重启客户端...")
 		reconnectMu.Lock()
 		reconnectNeeded = false
@@ -1363,5 +1370,8 @@ func downloadGeoFile(url, filename string) error {
 	f.Close()
 	return os.Rename(tmpName, filename)
 }
+
+
+
 
 
