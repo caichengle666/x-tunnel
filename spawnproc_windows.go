@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,7 +25,7 @@ func spawnNewProcess(desiredTun bool) {
 	}
 
 	args := buildSpawnArgs(exe, desiredTun)
-	argStr := strings.Join(args, " ")
+	argStr := windowsCommandLine(args)
 
 	if desiredTun {
 		log.Printf("[热加载] TUN 模式，释放端口并请求管理员权限...")
@@ -38,6 +39,7 @@ func spawnNewProcess(desiredTun bool) {
 		err := windows.ShellExecute(0, verb, file, params, dir, showCmd)
 		if err != nil {
 			log.Printf("[热加载] ShellExecute 失败: %v", err)
+			restoreListenersAfterSpawnFailure()
 			return
 		}
 		log.Printf("[热加载] 管理员进程已请求")
@@ -67,6 +69,7 @@ func spawnNewProcess(desiredTun bool) {
 		}
 		if err2 := cmd.Start(); err2 != nil {
 			log.Printf("[热加载] 子进程启动也失败: %v", err2)
+			restoreListenersAfterSpawnFailure()
 			return
 		}
 		log.Printf("[热加载] 子进程 PID=%d (fallback)", cmd.Process.Pid)
@@ -79,6 +82,20 @@ func spawnNewProcess(desiredTun bool) {
 	time.Sleep(800 * time.Millisecond)
 	log.Printf("[热加载] 当前进程退出")
 	os.Exit(0)
+}
+
+func windowsCommandLine(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, strconv.Quote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func restoreListenersAfterSpawnFailure() {
+	log.Printf("[热加载] 新进程启动失败，恢复当前进程监听...")
+	startWebGUI()
+	startListeners()
 }
 
 func buildSpawnArgs(exe string, desiredTun bool) []string {

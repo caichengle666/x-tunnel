@@ -264,8 +264,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"geoip":             "0 cidr",
 			"geosite":           "0 domains",
 			"mode":              "server",
-	"ech_dns":           dnsServer,
-	"ech_domain":        echDomain,
+			"ech_dns":           dnsServer,
+			"ech_domain":        echDomain,
 		})
 		return
 	}
@@ -321,8 +321,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"geoip":             fmt.Sprint(geoIPCount, " cidr"),
 		"geosite":           fmt.Sprint(geoSiteCount, " domains"),
 		"mode":              "client",
-	"ech_dns":           dnsServer,
-	"ech_domain":        echDomain,
+		"ech_dns":           dnsServer,
+		"ech_domain":        echDomain,
 	})
 }
 
@@ -848,8 +848,8 @@ setInterval(fetchLogs, 2000);
 // ======================== 热加载配置 ========================
 
 type updateRequest struct {
-	EchDNS    string `json:"ech_dns,omitempty"`
-	EchDomain string `json:"ech_domain,omitempty"`
+	EchDNS      string `json:"ech_dns,omitempty"`
+	EchDomain   string `json:"ech_domain,omitempty"`
 	Token       string `json:"token,omitempty"`
 	Listen      string `json:"listen,omitempty"`
 	Connections int    `json:"connections,omitempty"`
@@ -883,6 +883,7 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	reconnectMu.Lock()
 	defer reconnectMu.Unlock()
+	reconnectNeeded = false
 
 	changes := []string{}
 
@@ -1312,11 +1313,3 @@ func downloadGeoFile(url, filename string) error {
 	f.Close()
 	return os.Rename(tmpName, filename)
 }
-
-
-
-
-
-
-
-
