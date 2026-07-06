@@ -1,6 +1,9 @@
 {
   "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:1090",
   "strategy": "failover",
+  "dns": "https://doh.pub/dns-query",
+  "block_ports": "443",
+  "connections": 3,
   "servers": [
     {
       "name": "韩国",

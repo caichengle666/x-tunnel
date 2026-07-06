@@ -1,4 +1,4 @@
-﻿//go:build windows
+//go:build windows
 
 package main
 
@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	)
+)
 
 func handleTunToggle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -37,35 +37,21 @@ func handleTunToggle(w http.ResponseWriter, r *http.Request) {
 
 	tunnelConfig.TunMode = req.Enable
 	tunMode = req.Enable
+	log.Printf("[TUN] 切换 TUN 模式为: %v", tunMode)
 	_ = saveConfigToFile()
 	tunMu.Unlock()
 
-	if req.Enable {
-		// TUN ON: start TUN in-process (requires admin - process must be elevated)
-		log.Printf("[TUN] 正在启动 TUN 模式...")
-		go func() {
-			runTUNModeIfNeeded()
-			log.Printf("[TUN] TUN 模式已启动")
-		}()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":  true,
-			"tun_mode": true,
-			"active":   false,
-			"message":  "TUN 模式已启动",
-		})
-	} else {
-		// TUN OFF: stop TUN in-process (with recover protection)
-		log.Printf("[TUN] 正在关闭 TUN 模式...")
-		go softStopTun()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":  true,
-			"tun_mode": false,
-			"active":   false,
-			"message":  "TUN 模式已关闭",
-		})
-	}
+	// 先发送 HTTP 响应（flush 到客户端）
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"tun_mode": req.Enable,
+		"active":   false,
+		"message":  func() string { if req.Enable { return "TUN 模式已启用，正在重启服务..." } else { return "TUN 模式已关闭，正在重启服务..." } }(),
+	})
+
+	// 再启动新进程（会停旧监听器、起新进程、旧进程退出）
+	go spawnNewProcess(req.Enable)
 }
 
 func handleTunStatus(w http.ResponseWriter, r *http.Request) {

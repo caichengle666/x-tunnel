@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bufio"
@@ -121,6 +121,9 @@ func init() {
 
 // stopAllListeners closes all local listeners for hot restart
 func stopAllListeners() {
+	if webServer != nil {
+		webServer.Close()
+	}
 	if listenerStop != nil {
 		select {
 		case <-listenerStop:

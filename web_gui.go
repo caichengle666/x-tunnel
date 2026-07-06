@@ -264,6 +264,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"geoip":             "0 cidr",
 			"geosite":           "0 domains",
 			"mode":              "server",
+	"ech_dns":           dnsServer,
+	"ech_domain":        echDomain,
 		})
 		return
 	}
@@ -319,6 +321,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"geoip":             fmt.Sprint(geoIPCount, " cidr"),
 		"geosite":           fmt.Sprint(geoSiteCount, " domains"),
 		"mode":              "client",
+	"ech_dns":           dnsServer,
+	"ech_domain":        echDomain,
 	})
 }
 
@@ -738,6 +742,8 @@ setInterval(fetchStatus, 3000);
 function editGlobalConfig() {
     fetch('/api/config').then(function(r){return r.json()}).then(function(data){
         document.getElementById('edit-listen').value = data.listen || '';
+        document.getElementById('edit-ech-dns').value = data.ech_dns || '';
+        document.getElementById('edit-ech-domain').value = data.ech_domain || '';
         document.getElementById('edit-connections').value = data.connections || '3';
         document.getElementById('edit-strategy').value = data.strategy || 'failover';
         document.getElementById('edit-ips').value = data.ips || '';
@@ -756,7 +762,9 @@ function saveGlobalConfig() {
         connections: parseInt(document.getElementById('edit-connections').value) || 3,
         strategy: document.getElementById('edit-strategy').value,
         ips: document.getElementById('edit-ips').value,
-        tun_mode: document.getElementById('edit-tun-mode').checked
+        tun_mode: document.getElementById('edit-tun-mode').checked,
+        ech_dns: document.getElementById('edit-ech-dns').value,
+        ech_domain: document.getElementById('edit-ech-domain').value
     };
     var msgDiv = document.getElementById('edit-global-msg');
     msgDiv.className = 'mt-2 text-sm text-yellow-400';
@@ -812,8 +820,17 @@ setInterval(fetchLogs, 2000);
                     <label class="text-gray-400 text-sm">IP策略</label>
                     <input id="edit-ips" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="">
                 </div>
+                
+                <div>
+                    <label class="text-gray-400 text-sm">ECH DNS (仅 wss)</label>
+                    <input id="edit-ech-dns" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="https://doh.pub/dns-query">
+                </div>
+                <div>
+                    <label class="text-gray-400 text-sm">ECH Domain (仅 wss)</label>
+                    <input id="edit-ech-domain" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="cloudflare-ech.com">
+                </div>
                 <div class="flex items-center space-x-2 pt-2">
-                    <input id="edit-tun-mode" type="checkbox" class="w-4 h-4" onchange="toggleTun(this.checked)">
+                    <input id="edit-tun-mode" type="checkbox" class="w-4 h-4">
                     <label class="text-gray-400 text-sm">TUN 模式 (仅 Windows) <span id="tun-toggle-status" class="text-xs"></span></label>
                 </div>
             </div>
@@ -831,6 +848,8 @@ setInterval(fetchLogs, 2000);
 // ======================== 热加载配置 ========================
 
 type updateRequest struct {
+	EchDNS    string `json:"ech_dns,omitempty"`
+	EchDomain string `json:"ech_domain,omitempty"`
 	Token       string `json:"token,omitempty"`
 	Listen      string `json:"listen,omitempty"`
 	Connections int    `json:"connections,omitempty"`
@@ -920,6 +939,18 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		tunnelConfig.Listen = req.Listen
 		listenAddr = req.Listen
 		changes = append(changes, "listen")
+		reconnectNeeded = true
+	}
+	if req.EchDNS != "" && req.EchDNS != dnsServer {
+		log.Printf("[热加载] ech_dns: %s -> %s", dnsServer, req.EchDNS)
+		dnsServer = req.EchDNS
+		changes = append(changes, "ech_dns")
+		reconnectNeeded = true
+	}
+	if req.EchDomain != "" && req.EchDomain != echDomain {
+		log.Printf("[热加载] ech_domain: %s -> %s", echDomain, req.EchDomain)
+		echDomain = req.EchDomain
+		changes = append(changes, "ech_domain")
 		reconnectNeeded = true
 	}
 	if req.Connections > 0 && req.Connections != tunnelConfig.Connections {
@@ -1332,3 +1363,5 @@ func downloadGeoFile(url, filename string) error {
 	f.Close()
 	return os.Rename(tmpName, filename)
 }
+
+
