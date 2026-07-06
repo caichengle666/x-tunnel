@@ -347,6 +347,8 @@ const dashboardHTML = `<!DOCTYPE html>
     .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
     .status-online { background: #22c55e; box-shadow: 0 0 5px #22c55e; }
     .status-offline { background: #ef4444; }
+    .listen-list { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+    .listen-list div + div { margin-top: 4px; }
 </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
@@ -355,7 +357,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <h1 class="text-3xl font-bold mb-8 text-blue-400">x-tunnel 管理面板</h1>
 
     <!-- Status Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mb-8">
         <div class="bg-gray-800 rounded-lg p-4">
             <div class="text-gray-400 text-sm" id="label-active">活动通道</div>
             <div class="text-2xl font-bold" id="active-channels">--</div>
@@ -364,9 +366,9 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="text-gray-400 text-sm">健康状态</div>
             <div class="text-2xl font-bold" id="health-status">--</div>
         </div>
-        <div class="bg-gray-800 rounded-lg p-4">
+        <div class="bg-gray-800 rounded-lg p-4 xl:col-span-2">
             <div class="text-gray-400 text-sm">监听地址</div>
-            <div class="text-xl font-mono" id="cfg-listen">--</div>
+            <div class="font-mono listen-list" id="cfg-listen">--</div>
         </div>
         <div class="bg-gray-800 rounded-lg p-4">
             <div class="text-gray-400 text-sm">策略</div>
@@ -441,7 +443,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <button onclick="editGlobalConfig()" class="px-3 py-1 bg-blue-700 text-white rounded text-sm hover:bg-blue-600">修改</button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
-            <div><span class="text-gray-400">监听:</span> <span id="cfg-listen2">--</span></div>
+            <div class="md:col-span-2"><div class="text-gray-400 mb-1">监听:</div><div id="cfg-listen2" class="listen-list">--</div></div>
             <div><span class="text-gray-400">连接数:</span> <span id="cfg-conn">--</span></div>
             <div><span class="text-gray-400">模式:</span> <span id="cfg-strategy2">--</span></div>
             <div><span class="text-gray-400">IP策略:</span> <span id="cfg-ips">--</span></div>
@@ -535,7 +537,7 @@ function fetchStatus() {
         }
         // Update listen address
         var listenEl = document.getElementById('cfg-listen');
-        if (listenEl) listenEl.textContent = data.listen || data.server || '--';
+        if (listenEl) listenEl.innerHTML = formatListen(data.listen || data.server || '');
         
         // Render servers
         renderServers(data);
@@ -682,7 +684,7 @@ function fetchConfig() {
     fetch('/api/config').then(r => r.json()).then(data => {
         var el;
         el = document.getElementById('cfg-listen2');
-        if (el) el.textContent = data.listen || '--';
+        if (el) el.innerHTML = formatListen(data.listen || '');
         el = document.getElementById('cfg-conn');
         if (el) el.textContent = data.connections || '--';
         el = document.getElementById('cfg-strategy2');
@@ -701,6 +703,12 @@ function fetchLogs() {
 }
 
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function formatListen(s) {
+    if (!s) return '--';
+    return String(s).split(',').map(function(v) {
+        return '<div>' + escapeHtml(v.trim()) + '</div>';
+    }).join('');
+}
 function clearLogs() { document.getElementById('log-container').innerHTML = ''; }
 
 function restartClient() {
