@@ -22,6 +22,8 @@ func IsTunActive() bool { return false }
 
 func StopTun() {}
 
+func ensureControlPlaneBypass() {}
+
 func bindSocketToPhysNIC(_ string, _ syscall.RawConn) error {
 	return nil
 }

@@ -20,5 +20,6 @@
       "weight": 100
     }
   ],
+  "tun_mode": false,
   "web_listen": ":9090"
 }

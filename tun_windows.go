@@ -30,6 +30,16 @@ func IsTunActive() bool {
 	return tunActive
 }
 
+func ensureControlPlaneBypass() {
+	if physIfaceIndex > 0 {
+		return
+	}
+	physIfaceIndex = detectPhysIfaceIndex()
+	if physIfaceIndex > 0 {
+		log.Printf("[客户端] 控制面物理网卡接口索引: %d", physIfaceIndex)
+	}
+}
+
 // StopTun is the public wrapper that locks tunMu (for direct API calls).
 func StopTun() {
 	tunMu.Lock()
@@ -182,11 +192,15 @@ func bindSocketToPhysNIC(network string, c syscall.RawConn) error {
 		return nil
 	}
 	return c.Control(func(fd uintptr) {
+		var sockErr error
 		switch network {
 		case "tcp4", "udp4":
-			syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 31, physIfaceIndex)
+			sockErr = setUnicastIF(fd, physIfaceIndex, false)
 		case "tcp6", "udp6":
-			syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IPV6, 31, physIfaceIndex)
+			sockErr = setUnicastIF(fd, physIfaceIndex, true)
+		}
+		if sockErr != nil {
+			log.Printf("[TUN] bind physical NIC failed: %v", sockErr)
 		}
 	})
 }

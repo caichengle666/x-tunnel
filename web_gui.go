@@ -659,7 +659,6 @@ function saveServer() {
             if (resp.restart) {
                 fetch('/api/restart', { method: 'POST' });
             }
-            fetch('/api/restart', { method: 'POST' });
             setTimeout(function(){ cancelAddServer(); location.reload(); }, 5000);
         } else {
             msgDiv.className = 'mt-2 text-sm text-red-400';

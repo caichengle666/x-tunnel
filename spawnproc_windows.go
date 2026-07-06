@@ -49,6 +49,9 @@ func spawnNewProcess(desiredTun bool) {
 	}
 
 	// 关闭 TUN 模式：释放端口后用 ShellExecute 创建独立进程
+	tunMu.Lock()
+	softStopTun()
+	tunMu.Unlock()
 	log.Printf("[热加载] 停止监听器释放端口...")
 	stopAllListeners()
 	time.Sleep(500 * time.Millisecond)
@@ -113,6 +116,8 @@ func buildSpawnArgs(exe string, desiredTun bool) []string {
 	}
 	if desiredTun {
 		args = append(args, "-tun")
+	} else {
+		args = append(args, "-tun=false")
 	}
 	return args
 }

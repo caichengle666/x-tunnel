@@ -219,7 +219,7 @@ func main() {
 		} else {
 			log.Printf("[服务端] 直连模式（未配置SOCKS5代理）")
 		}
-	startWebGUI()
+		startWebGUI()
 		runWebSocketServer(listenAddr)
 		return
 	}
@@ -320,6 +320,7 @@ func main() {
 			log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s, 监听: %s)",
 				configFile, len(cfg.Servers), cfg.Strategy, listenAddr)
 			echPool = NewMultiPool(&tunnelConfig)
+			ensureControlPlaneBypass()
 			echPool.Start()
 		} else {
 			log.Printf("[客户端] 使用命令行参数模式（单服务器）")
@@ -330,6 +331,7 @@ func main() {
 			}
 			tunnelConfig = *simpleCfg
 			echPool = NewMultiPool(simpleCfg)
+			ensureControlPlaneBypass()
 			echPool.Start()
 		}
 	} else {
@@ -342,6 +344,7 @@ func main() {
 		}
 		tunnelConfig = *simpleCfg
 		echPool = NewMultiPool(simpleCfg)
+		ensureControlPlaneBypass()
 		echPool.Start()
 	}
 
@@ -1050,6 +1053,27 @@ func queryHTTPSRecord(domain, dnsServer string) (string, error) {
 	return queryDNSUDP(domain, dnsServer)
 }
 
+func controlPlaneDialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{
+		Timeout: timeout,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				var resolverDialer net.Dialer
+				resolverDialer.Timeout = timeout
+				resolverDialer.Control = func(network, address string, rawC syscall.RawConn) error {
+					return bindSocketToPhysNIC(network, rawC)
+				}
+				return resolverDialer.DialContext(ctx, network, address)
+			},
+		},
+		Control: func(network, address string, rawC syscall.RawConn) error {
+			return bindSocketToPhysNIC(network, rawC)
+		},
+	}
+	return d.DialContext(ctx, network, address)
+}
+
 func queryDNSUDP(domain, dnsServer string) (string, error) {
 	if !strings.Contains(dnsServer, ":") {
 		dnsServer = dnsServer + ":53"
@@ -1057,7 +1081,7 @@ func queryDNSUDP(domain, dnsServer string) (string, error) {
 
 	query := buildDNSQuery(domain, typeHTTPS)
 
-	conn, err := net.Dial("udp", dnsServer)
+	conn, err := controlPlaneDialContext(context.Background(), "udp", dnsServer, 2*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("连接 DNS 服务器失败: %v", err)
 	}
@@ -1097,7 +1121,13 @@ func queryDoH(domain, dohURL string) (string, error) {
 	}
 	req.Header.Set("Accept", "application/dns-message")
 	req.Header.Set("Content-Type", "application/dns-message")
-	client := &http.Client{Timeout: 3 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return controlPlaneDialContext(ctx, network, address, 3*time.Second)
+		},
+		TLSHandshakeTimeout: 3 * time.Second,
+	}
+	client := &http.Client{Timeout: 3 * time.Second, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -1381,10 +1411,10 @@ func runWebSocketServer(addr string) {
 	})
 	// 根路径返回状态页
 	if !webGUIActive {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<html>
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `<html>
 <head><title>x-tunnel</title></head>
 <body style="font-family:monospace;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;height:100vh;margin:0">
 <div style="text-align:center">
@@ -1394,7 +1424,7 @@ func runWebSocketServer(addr string) {
 <p>Status: <span style="color:#0f0">OK</span></p>
 </div>
 </body></html>`, path, map[bool]string{true: "已设置", false: "未设置"}[token != ""])
-	})
+		})
 	}
 
 	if u.Scheme == "wss" {
@@ -2390,15 +2420,7 @@ func (p *ECHPool) dialWebSocketWithECH(addr string, retries int, ip string, clie
 				}
 			}
 
-			var d net.Dialer
-			d.Timeout = cfg.DialTimeout
-
-			// 绑定物理网卡接口（非 Windows 上 bindSocketToPhysNIC 为空操作）
-			d.Control = func(_, _ string, rawC syscall.RawConn) error {
-				return bindSocketToPhysNIC(network, rawC)
-			}
-
-			return d.DialContext(context.Background(), network, address)
+			return controlPlaneDialContext(context.Background(), network, address, cfg.DialTimeout)
 		}
 		return dialer
 	}
