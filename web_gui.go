@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -56,41 +57,71 @@ func stopWebGUI() {
 }
 
 func startWebGUI() {
-	if webListen == "" {
-		return
-	}
-
 	// Capture standard log output while keeping stderr output.
 	logBuffer = ring.New(logRingSize)
 	log.SetOutput(io.MultiWriter(logWriter{}, os.Stderr))
 
 	// 服务端模式：web 与 WebSocket 共享端口
-	// 如果 webListen 的端口号与 listenAddr 一致，则共用同一个 HTTP 服务
-	if webListen != "" && listenAddr != "" {
-		webPort := webListen
-		if strings.Contains(listenAddr, webPort) {
-			webGUIActive = true
-			log.Printf("[Web GUI] 已合并到 WebSocket 端口 %s", webListen)
-			http.HandleFunc("/", handleDashboard)
-			http.HandleFunc("/api/status", handleStatus)
-			http.HandleFunc("/api/logs", handleLogs)
-			http.HandleFunc("/api/config", handleConfig)
-			http.HandleFunc("/api/update", handleUpdateConfig)
-			http.HandleFunc("/api/tun/toggle", handleTunToggle)
-			http.HandleFunc("/api/tun/status", handleTunStatus)
-			http.HandleFunc("/api/geo/upload", handleGeoUpload)
-			http.HandleFunc("/api/geo/reload", handleGeoReload)
-			http.HandleFunc("/api/geo/upgrade", handleGeoUpgrade)
-			http.HandleFunc("/api/restart", handleRestartClient)
-			http.HandleFunc("/api/servers/add", handleAddServer)
-			http.HandleFunc("/api/servers/update", handleUpdateServer)
-			http.HandleFunc("/api/servers/delete", handleDeleteServer)
-			http.HandleFunc("/api/saveconfig", handleSaveConfig)
-			return
-		}
+	if canMergeWebWithTunnel() {
+		webGUIActive = true
+		log.Printf("[Web GUI] 已合并到 WebSocket 端口 %s", webListen)
+		registerWebGUIHandlers(http.DefaultServeMux)
+		return
+	}
+
+	if webListen == "" {
+		return
 	}
 
 	mux := http.NewServeMux()
+	registerWebGUIHandlers(mux)
+
+	go func() {
+		webServer = &http.Server{Handler: mux, Addr: webListen}
+		log.Printf("[Web GUI] 监听 %s", webListen)
+		if err := webServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[Web GUI] 错误: %v", err)
+		}
+	}()
+}
+
+func canMergeWebWithTunnel() bool {
+	if listenAddr == "" {
+		return false
+	}
+	u, err := url.Parse(listenAddr)
+	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
+		return false
+	}
+	tunnelPort := u.Port()
+	if tunnelPort == "" {
+		return false
+	}
+	if webListen == "" {
+		webListen = ":" + tunnelPort
+		return true
+	}
+	return listenPort(webListen) == tunnelPort
+}
+
+func listenPort(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return strings.TrimPrefix(addr, ":")
+	}
+	if hostPort := strings.TrimPrefix(addr, "http://"); hostPort != addr {
+		if u, err := url.Parse(addr); err == nil {
+			return u.Port()
+		}
+	}
+	if strings.Contains(addr, ":") {
+		if u, err := url.Parse("//" + addr); err == nil {
+			return u.Port()
+		}
+	}
+	return ""
+}
+
+func registerWebGUIHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/", handleDashboard)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/logs", handleLogs)
@@ -106,14 +137,6 @@ func startWebGUI() {
 	mux.HandleFunc("/api/servers/update", handleUpdateServer)
 	mux.HandleFunc("/api/servers/delete", handleDeleteServer)
 	mux.HandleFunc("/api/saveconfig", handleSaveConfig)
-
-	go func() {
-		webServer = &http.Server{Handler: mux, Addr: webListen}
-		log.Printf("[Web GUI] 监听 %s", webListen)
-		if err := webServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[Web GUI] 错误: %v", err)
-		}
-	}()
 }
 
 func countActiveClients() int {
@@ -391,6 +414,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		"listen":            listenAddr,
 		"forward":           forwardAddr,
 		"token":             displayToken,
+		"token_raw":         token,
 		"server_tokens":     serverTokens,
 		"server_tokens_raw": serverTokensRaw,
 		"insecure":          insecure,
@@ -1079,6 +1103,7 @@ setInterval(fetchStatus, 3000);
 function editGlobalConfig() {
     fetch('/api/config').then(function(r){return r.json()}).then(function(data){
         document.getElementById('edit-listen').value = data.listen || '';
+        document.getElementById('edit-token').value = data.token_raw || '';
         document.getElementById('edit-ech-dns').value = data.ech_dns || '';
         document.getElementById('edit-ech-domain').value = data.ech_domain || '';
         document.getElementById('edit-connections').value = data.connections || '3';
@@ -1096,6 +1121,7 @@ function cancelGlobalConfig() {
 function saveGlobalConfig() {
     var body = {
         listen: document.getElementById('edit-listen').value,
+        token: document.getElementById('edit-token').value,
         connections: parseInt(document.getElementById('edit-connections').value) || 3,
         strategy: document.getElementById('edit-strategy').value,
         ips: document.getElementById('edit-ips').value,
@@ -1142,6 +1168,10 @@ setInterval(fetchLogs, 2000);
                     <input id="edit-listen" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="socks5://127.0.0.1:1080,http://127.0.0.1:30001">
                 </div>
                 <div>
+                    <label class="text-gray-400 text-sm">Token</label>
+                    <input id="edit-token" class="w-full bg-gray-700 text-white rounded p-2 mt-1" placeholder="123456">
+                </div>
+                <div>
                     <label class="text-gray-400 text-sm">连接数</label>
                     <input id="edit-connections" type="number" class="w-full bg-gray-700 text-white rounded p-2 mt-1" value="3" min="1" max="20">
                 </div>
@@ -1185,17 +1215,17 @@ setInterval(fetchLogs, 2000);
 // ======================== 热加载配置 ========================
 
 type updateRequest struct {
-	EchDNS      string `json:"ech_dns,omitempty"`
-	EchDomain   string `json:"ech_domain,omitempty"`
-	Token       string `json:"token,omitempty"`
-	Listen      string `json:"listen,omitempty"`
-	Connections int    `json:"connections,omitempty"`
-	Forward     string `json:"forward,omitempty"`
-	ConnNum     int    `json:"conn_num,omitempty"`
-	Insecure    *bool  `json:"insecure,omitempty"`
-	IPs         string `json:"ips,omitempty"`
-	Strategy    string `json:"strategy,omitempty"`
-	TunMode     *bool  `json:"tun_mode,omitempty"`
+	EchDNS      string  `json:"ech_dns,omitempty"`
+	EchDomain   string  `json:"ech_domain,omitempty"`
+	Token       *string `json:"token,omitempty"`
+	Listen      string  `json:"listen,omitempty"`
+	Connections int     `json:"connections,omitempty"`
+	Forward     string  `json:"forward,omitempty"`
+	ConnNum     int     `json:"conn_num,omitempty"`
+	Insecure    *bool   `json:"insecure,omitempty"`
+	IPs         string  `json:"ips,omitempty"`
+	Strategy    string  `json:"strategy,omitempty"`
+	TunMode     *bool   `json:"tun_mode,omitempty"`
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -1224,9 +1254,10 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	changes := []string{}
 
-	if req.Token != "" && req.Token != token {
+	if req.Token != nil && *req.Token != token {
 		log.Printf("[热加载] token 已更新")
-		token = req.Token
+		token = *req.Token
+		tunnelConfig.Token = *req.Token
 		changes = append(changes, "token")
 		reconnectNeeded = true
 	}

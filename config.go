@@ -20,6 +20,7 @@ type ServerConfig struct {
 // TunnelConfig 完整配置文件
 type TunnelConfig struct {
 	Listen      string         `json:"listen"`                // 本地监听地址
+	Token       string         `json:"token,omitempty"`       // 全局 token
 	Strategy    string         `json:"strategy"`              // failover | loadbalance | latency
 	DNS         string         `json:"dns,omitempty"`         // DNS 服务器
 	BlockPorts  string         `json:"block_ports,omitempty"` // UDP 拦截端口
@@ -39,11 +40,21 @@ var ConfigPaths = []string{
 func defaultConfig() TunnelConfig {
 	return TunnelConfig{
 		Listen:      "socks5://127.0.0.1:1080,http://127.0.0.1:30001",
+		Token:       "123456",
 		Strategy:    "failover",
 		DNS:         "https://doh.pub/dns-query",
 		BlockPorts:  "443",
 		Connections: 3,
-		Servers:     []ServerConfig{},
+		Servers: []ServerConfig{
+			{
+				Name:        "默认服务器",
+				URL:         "ws://127.0.0.1:8090/tunnel",
+				Token:       "123456",
+				Connections: 3,
+				Weight:      100,
+			},
+		},
+		WebListen: ":9090",
 	}
 }
 
@@ -86,6 +97,19 @@ func FindConfig() string {
 		}
 	}
 	return ""
+}
+
+func EnsureDefaultConfig(path string) error {
+	if path == "" {
+		path = "config.json"
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	cfg := defaultConfig()
+	return SaveConfig(path, &cfg)
 }
 
 // parseMultiForward 解析逗号分隔的多个服务端地址

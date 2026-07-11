@@ -1,5 +1,6 @@
 {
   "listen": "socks5://127.0.0.1:1080,http://127.0.0.1:1090",
+  "token": "123456",
   "strategy": "latency",
   "dns": "https://doh.pub/dns-query",
   "block_ports": "443",
@@ -8,7 +9,7 @@
     {
       "name": "example-server",
       "url": "wss://example.com/tunnel",
-      "token": "change-me",
+      "token": "123456",
       "connections": 3,
       "weight": 100
     }

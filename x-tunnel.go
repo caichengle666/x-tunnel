@@ -226,6 +226,18 @@ func main() {
 	}
 
 	// ================= 客户端模式 =================
+	if forwardAddr == "" && configFile == "" {
+		configFile = FindConfig()
+		if configFile == "" {
+			configFile = "config.json"
+			if err := EnsureDefaultConfig(configFile); err != nil {
+				log.Printf("[客户端] 生成默认配置文件失败: %v", err)
+				configFile = ""
+			} else {
+				log.Printf("[客户端] 已生成默认配置文件: %s", configFile)
+			}
+		}
+	}
 	// 如果要从配置文件加载多服务器，先延迟 forwardAddr 检查
 	configWillLoad := configFile != ""
 	if forwardAddr == "" && !configWillLoad {
@@ -293,9 +305,6 @@ func main() {
 
 	// 尝试加载配置文件（多服务器模式）
 	// 注意：如果已明确指定 -f 参数，跳过配置文件加载
-	if forwardAddr == "" && configFile == "" {
-		configFile = FindConfig()
-	}
 	if configFile != "" && forwardAddr == "" {
 		cfg, err := LoadConfig(configFile)
 		if err != nil {
@@ -305,6 +314,9 @@ func main() {
 			tunnelConfig = *cfg
 			if !flagSet["tun"] {
 				tunMode = cfg.TunMode
+			}
+			if !flagSet["token"] && cfg.Token != "" {
+				token = cfg.Token
 			}
 			if tunMode && strings.TrimSpace(ips) == "" {
 				ipStrategy = IPStrategyIPv4Only
