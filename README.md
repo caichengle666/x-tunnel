@@ -45,9 +45,43 @@ wss://your-domain.example/tunnel
 
 More details: [README-docker.md](README-docker.md)
 
+### Server Web + WebSocket Port Reuse
+
+On the server, the Web management panel and WebSocket tunnel can share a single port:
+
+```text
+x-tunnel -l ws://0.0.0.0:8090/tunnel -token your-token
+```
+
+- `/tunnel` handles the WebSocket tunnel
+- `/` serves the server Web status page
+
+Port reuse happens automatically when:
+
+- The server `-l` address uses `ws://` or `wss://`
+- No separate `-web` flag is specified, or the `-web` port matches the tunnel port
+
+If you need the Web panel on a different port, use `-web` explicitly:
+
+```text
+x-tunnel -l ws://0.0.0.0:8090/tunnel -token your-token -web :9090
+```
+
 ## Client Quick Start
 
-Run from a config file:
+If no config file exists, the client auto-generates a default `config.json` on first run:
+
+```text
+listen:      socks5://127.0.0.1:1080,http://127.0.0.1:30001
+token:       123456
+web_listen:  :9090
+servers:     ws://127.0.0.1:8090/tunnel (token 123456)
+```
+
+You can then edit the token, servers, and other settings from the Web panel at `http://127.0.0.1:9090/`.
+
+Or run from a config file explicitly:
+
 
 ```powershell
 x-tunnel-new.exe -config config.json -web :9090
