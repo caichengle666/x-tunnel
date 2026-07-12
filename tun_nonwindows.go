@@ -27,3 +27,8 @@ func ensureControlPlaneBypass() {}
 func bindSocketToPhysNIC(_ string, _ syscall.RawConn) error {
 	return nil
 }
+
+// probeIfaceUDP 非 Windows 平台不做网卡探测（默认返回 true，使用默认路由）
+func probeIfaceUDP(_ int) bool {
+	return true
+}

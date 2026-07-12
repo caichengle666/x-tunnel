@@ -9,6 +9,9 @@ import (
 )
 
 func handleTunToggle(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return

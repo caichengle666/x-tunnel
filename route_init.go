@@ -22,7 +22,9 @@ func init() {
 }
 
 // initClientRouting loads geoip/geosite and initializes routing rules.
+// 若本地文件不存在，会先按镜像自动下载。
 func initClientRouting() {
+	ensureMissingGeoFiles()
 	if geoipFile != "" {
 		loadGeoIP()
 	}

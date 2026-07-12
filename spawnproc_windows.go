@@ -110,6 +110,26 @@ func buildSpawnArgs(exe string, desiredTun bool) []string {
 		} else {
 			args = append(args, "-config", configFile)
 		}
+	} else {
+		// 无配置文件时保留命令行关键参数，避免重启丢配置
+		if listenAddr != "" {
+			args = append(args, "-l", listenAddr)
+		}
+		if forwardAddr != "" {
+			args = append(args, "-f", forwardAddr)
+		}
+		if token != "" {
+			args = append(args, "-token", token)
+		}
+		if connectionNum > 0 {
+			args = append(args, "-n", strconv.Itoa(connectionNum))
+		}
+		if insecure {
+			args = append(args, "-insecure")
+		}
+		if ips != "" {
+			args = append(args, "-ips", ips)
+		}
 	}
 	if webListen != "" {
 		args = append(args, "-web", webListen)

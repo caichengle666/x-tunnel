@@ -79,6 +79,7 @@ var (
 	refreshMu sync.Mutex
 
 	echPool    *MultiPool
+	poolMu     sync.RWMutex
 	configFile string
 
 	clientID      string
@@ -269,7 +270,8 @@ func main() {
 			}
 			if !fallback {
 				if err := prepareECH(); err != nil {
-					log.Fatalf("[客户端] 获取 ECH 公钥失败: %v", err)
+					log.Printf("[客户端] 获取 ECH 公钥失败: %v，自动降级为普通 TLS 1.3", err)
+					fallback = true
 				}
 			} else {
 				log.Printf("[客户端] fallback 模式已启用：禁用 ECH，使用标准 TLS 1.3")
@@ -308,47 +310,39 @@ func main() {
 	if configFile != "" && forwardAddr == "" {
 		cfg, err := LoadConfig(configFile)
 		if err != nil {
-			log.Printf("[客户端] 加载配置文件失败: %v，使用命令行参数", err)
+			log.Fatalf("[客户端] 加载配置文件失败: %v", err)
 		}
-		if err == nil && len(cfg.Servers) > 0 {
-			tunnelConfig = *cfg
-			if !flagSet["tun"] {
-				tunMode = cfg.TunMode
-			}
-			if !flagSet["token"] && cfg.Token != "" {
-				token = cfg.Token
-			}
-			if tunMode && strings.TrimSpace(ips) == "" {
-				ipStrategy = IPStrategyIPv4Only
-			}
-			if !flagSet["web"] && cfg.WebListen != "" {
-				webListen = cfg.WebListen
-			}
-			if !flagSet["web"] && webListen == "" {
-				webListen = ":9090"
-			}
-			if cfg.Listen != "" && listenAddr == "" {
-				listenAddr = cfg.Listen
-			}
-			log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s, 监听: %s)",
-				configFile, len(cfg.Servers), cfg.Strategy, listenAddr)
-			echPool = NewMultiPool(&tunnelConfig)
-			ensureControlPlaneBypass()
-			echPool.Start()
-		} else {
-			log.Printf("[客户端] 使用命令行参数模式（单服务器）")
-			simpleAddrs := []string{forwardAddr}
-			simpleCfg := &TunnelConfig{
-				Strategy: "failover",
-				Servers:  configToServers(simpleAddrs),
-			}
-			tunnelConfig = *simpleCfg
-			echPool = NewMultiPool(simpleCfg)
-			ensureControlPlaneBypass()
-			echPool.Start()
+		if len(cfg.Servers) == 0 {
+			log.Fatalf("[客户端] 配置文件未包含任何服务器: %s", configFile)
 		}
+		tunnelConfig = *cfg
+		if !flagSet["tun"] {
+			tunMode = cfg.TunMode
+		}
+		if !flagSet["token"] && cfg.Token != "" {
+			token = cfg.Token
+		}
+		if tunMode && strings.TrimSpace(ips) == "" {
+			ipStrategy = IPStrategyIPv4Only
+		}
+		if !flagSet["web"] && cfg.WebListen != "" {
+			webListen = cfg.WebListen
+		}
+		if !flagSet["web"] && webListen == "" {
+			webListen = ":9090"
+		}
+		if cfg.Listen != "" && listenAddr == "" {
+			listenAddr = cfg.Listen
+		}
+		log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s, 监听: %s)",
+			configFile, len(cfg.Servers), cfg.Strategy, listenAddr)
+		prepareClientECH(cfg.Servers)
+		replaceClientPool(NewMultiPool(&tunnelConfig))
 	} else {
 		// 单服务器模式（兼容旧版 -f 参数）
+		if strings.TrimSpace(forwardAddr) == "" {
+			log.Fatalf("[客户端] 未指定服务地址 (-f) 且无可用配置文件")
+		}
 		log.Printf("[客户端] 使用命令行参数模式（单服务器）")
 		simpleAddrs := []string{forwardAddr}
 		simpleCfg := &TunnelConfig{
@@ -356,9 +350,8 @@ func main() {
 			Servers:  configToServers(simpleAddrs),
 		}
 		tunnelConfig = *simpleCfg
-		echPool = NewMultiPool(simpleCfg)
-		ensureControlPlaneBypass()
-		echPool.Start()
+		prepareClientECH(simpleCfg.Servers)
+		replaceClientPool(NewMultiPool(simpleCfg))
 	}
 
 	// Start Web GUI now that config + flags are resolved
@@ -952,43 +945,50 @@ func parseSOCKS5UDPResp(packet []byte) (*net.UDPAddr, []byte, error) {
 
 const typeHTTPS = 65
 
+// fallbackDNSList 是主 DoH 解析失败后的备用 UDP DNS（IP 直连，无需二次解析）。
+var fallbackDNSList = []string{
+	"223.5.5.5",       // 阿里云
+	"119.29.29.29",    // 腾讯 DNSPod
+	"114.114.114.114", // 114DNS
+	"180.76.76.76",    // 百度
+	"1.2.4.8",         // CNNIC SDNS
+	"223.6.6.6",       // 阿里云备选
+	"114.114.115.115", // 114DNS 备选
+	"182.254.116.116", // 腾讯备选
+}
+
 func prepareECH() error {
 	const maxAttempts = 30
+	// DNS 列表：先用用户配置的 DoH，再依次尝试备用 UDP DNS（IP 直连，无二次解析）。
+	dnsList := append([]string{dnsServer}, fallbackDNSList...)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		log.Printf("[客户端] DNS查询 ECH: %s -> %s (第%d次)", dnsServer, echDomain, attempt)
-		echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
-		if err != nil {
-			log.Printf("[客户端] DNS 查询失败: %v", err)
-			if attempt < maxAttempts {
-				time.Sleep(2 * time.Second)
+		for _, srv := range dnsList {
+			log.Printf("[客户端] DNS查询 ECH: %s -> %s (第%d次)", srv, echDomain, attempt)
+			echBase64, err := queryHTTPSRecord(echDomain, srv)
+			if err != nil {
+				log.Printf("[客户端] DNS 查询失败 (%s): %v", srv, err)
 				continue
 			}
-			return fmt.Errorf("ECH DNS 查询失败: %w", err)
-		}
-		if echBase64 == "" {
-			log.Printf("[客户端] 未找到 ECH 参数")
-			if attempt < maxAttempts {
-				time.Sleep(2 * time.Second)
+			if echBase64 == "" {
+				log.Printf("[客户端] 未找到 ECH 参数 (%s)", srv)
 				continue
 			}
-			return errors.New("ECH DNS 无 HTTPS 记录")
-		}
-		raw, err := base64.StdEncoding.DecodeString(echBase64)
-		if err != nil {
-			log.Printf("[客户端] ECH Base64 解码失败: %v", err)
-			if attempt < maxAttempts {
-				time.Sleep(2 * time.Second)
+			raw, err := base64.StdEncoding.DecodeString(echBase64)
+			if err != nil {
+				log.Printf("[客户端] ECH Base64 解码失败: %v", err)
 				continue
 			}
-			return fmt.Errorf("ECH 解码失败: %w", err)
+			echListMu.Lock()
+			echList = raw
+			echListMu.Unlock()
+			log.Printf("[客户端] ECHConfigList 长度: %d 字节", len(raw))
+			return nil
 		}
-		echListMu.Lock()
-		echList = raw
-		echListMu.Unlock()
-		log.Printf("[客户端] ECHConfigList 长度: %d 字节", len(raw))
-		return nil
+		if attempt < maxAttempts {
+			time.Sleep(2 * time.Second)
+		}
 	}
-	return errors.New("ECH 配置获取超时")
+	return fmt.Errorf("ECH DNS 查询失败: 所有 DNS 服务器均不可用")
 }
 
 func refreshECH() error {
@@ -1066,20 +1066,151 @@ func queryHTTPSRecord(domain, dnsServer string) (string, error) {
 	return queryDNSUDP(domain, dnsServer)
 }
 
+// prepareClientECH 在客户端启动时预取 ECH；任一服务器为 wss 时启用。
+func prepareClientECH(servers []ServerConfig) {
+	needECH := false
+	for _, srv := range servers {
+		u, err := url.Parse(strings.TrimSpace(srv.URL))
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(u.Scheme, "wss") {
+			needECH = true
+			break
+		}
+	}
+	if !needECH {
+		return
+	}
+	if insecure && !fallback {
+		fallback = true
+		log.Printf("[客户端] wss + insecure：自动禁用 ECH（fallback）")
+	}
+	if fallback {
+		log.Printf("[客户端] fallback 模式已启用：禁用 ECH，使用标准 TLS 1.3")
+		return
+	}
+	if err := prepareECH(); err != nil {
+		log.Printf("[客户端] 获取 ECH 公钥失败: %v，自动降级为普通 TLS 1.3", err)
+		fallback = true
+	}
+}
+
+// resolveControlPlaneIPs 用控制面 DNS 解析主机名，失败时回退系统 DNS。
+func resolveControlPlaneIPs(host string) ([]net.IP, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil, fmt.Errorf("空主机名")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := controlPlaneResolver(3 * time.Second).LookupIPAddr(ctx, host)
+	if err == nil && len(ips) > 0 {
+		out := make([]net.IP, 0, len(ips))
+		for _, a := range ips {
+			out = append(out, a.IP)
+		}
+		return out, nil
+	}
+	// 回退系统 DNS，兼容企业内网/禁公共 DNS 环境
+	sysIPs, sysErr := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if sysErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, sysErr
+	}
+	out := make([]net.IP, 0, len(sysIPs))
+	for _, a := range sysIPs {
+		out = append(out, a.IP)
+	}
+	return out, nil
+}
+
+// replaceClientPool 原子替换客户端连接池：先启动新池，再停旧池。
+func replaceClientPool(newPool *MultiPool) {
+	poolMu.Lock()
+	old := echPool
+	echPool = newPool
+	poolMu.Unlock()
+	if newPool != nil {
+		ensureControlPlaneBypass()
+		newPool.Start()
+	}
+	if old != nil {
+		old.Stop()
+	}
+}
+
+func clientPool() *MultiPool {
+	poolMu.RLock()
+	defer poolMu.RUnlock()
+	return echPool
+}
+
+func openClientTCPStream(target string) (*smux.Stream, int, int, error) {
+	p := clientPool()
+	if p == nil {
+		return nil, 0, 0, errors.New("连接池未初始化")
+	}
+	return p.openTCPStream(target)
+}
+
+func openClientUDPStream(target string) (*smux.Stream, int, int, error) {
+	p := clientPool()
+	if p == nil {
+		return nil, 0, 0, errors.New("连接池未初始化")
+	}
+	return p.openUDPStream(target)
+}
+
+
+// controlPlaneResolver 强制使用公共 DNS，避免云电脑/TUN 场景下系统 DNS 超时。
+func controlPlaneResolver(timeout time.Duration) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			// 优先公共 DNS；全部失败再回退系统 DNS，兼容内网环境。
+			var lastErr error
+			var resolverDialer net.Dialer
+			resolverDialer.Timeout = timeout
+			resolverDialer.Control = func(network, address string, rawC syscall.RawConn) error {
+				return bindSocketToPhysNIC(network, rawC)
+			}
+			for _, dnsIP := range fallbackDNSList {
+				for _, n := range []string{"udp", "tcp"} {
+					conn, err := resolverDialer.DialContext(ctx, n, net.JoinHostPort(dnsIP, "53"))
+					if err == nil {
+						return conn, nil
+					}
+					lastErr = err
+				}
+			}
+			// 回退系统解析器给的地址（可能是内网 DNS）
+			if host, port, err := net.SplitHostPort(address); err == nil && host != "" {
+				for _, n := range []string{"udp", "tcp"} {
+					conn, err := resolverDialer.DialContext(ctx, n, net.JoinHostPort(host, port))
+					if err == nil {
+						return conn, nil
+					}
+					lastErr = err
+				}
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("无可用 DNS")
+		},
+	}
+}
+
 func controlPlaneDialContext(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{
-		Timeout: timeout,
-		Resolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				var resolverDialer net.Dialer
-				resolverDialer.Timeout = timeout
-				resolverDialer.Control = func(network, address string, rawC syscall.RawConn) error {
-					return bindSocketToPhysNIC(network, rawC)
-				}
-				return resolverDialer.DialContext(ctx, network, address)
-			},
-		},
+		Timeout:  timeout,
+		Resolver: controlPlaneResolver(timeout),
 		Control: func(network, address string, rawC syscall.RawConn) error {
 			return bindSocketToPhysNIC(network, rawC)
 		},
@@ -1549,6 +1680,8 @@ func runWebSocketServer(addr string) {
 	}
 	if token != "" {
 		upgrader.Subprotocols = []string{token}
+	} else {
+		log.Printf("[服务端] 警告: 未设置 token，公网暴露时任何人可连接 /tunnel")
 	}
 
 	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -2600,7 +2733,7 @@ func runTCPListener(rule string) {
 }
 
 func handleLocalTCP(c net.Conn, target string) {
-	stream, _, decision, err := echPool.openTCPStream(target)
+	stream, _, decision, err := openClientTCPStream(target)
 	if err != nil {
 		_ = c.Close()
 		return
@@ -2616,36 +2749,50 @@ func handleLocalTCP(c net.Conn, target string) {
 }
 
 // dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑
-// detectPhysIfaceIndex 选择一个可用的非 TUN 物理网卡索引（跳过 loopback 和虚拟网卡）
+// detectPhysIfaceIndex 选择一个可用的非 TUN 物理网卡索引（跳过 loopback 和虚拟网卡）。
+// 对每个候选网卡做一次真实 UDP DNS 测试，只返回真正能联通公网的网卡。
 func detectPhysIfaceIndex() int {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return -1
 	}
+	// 收集所有候选网卡索引（跳过未启用、loopback、TUN/虚拟网卡），优先 IPv4
+	var candidates []int
 	for _, iface := range ifaces {
-		// 跳过未启用、loopback、虚拟网卡
-		if iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		if iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		name := strings.ToLower(iface.Name)
 		if strings.Contains(name, "xtun") || strings.Contains(name, "wintun") ||
-			strings.Contains(name, "tap") || strings.Contains(name, "vEthernet") {
+			strings.Contains(name, "tap") || strings.Contains(name, "vEthernet") ||
+			strings.Contains(name, "docker") || strings.Contains(name, "wsl") {
 			continue
 		}
-		// 需要有 IP 地址
 		addrs, err := iface.Addrs()
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
-		// 优先有 IPv4 的接口
+		hasIPv4 := false
 		for _, a := range addrs {
 			if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
-				return iface.Index
+				hasIPv4 = true
+				break
 			}
 		}
+		if hasIPv4 {
+			candidates = append(candidates, iface.Index)
+		}
+	}
+	// 对每个候选网卡做真实 UDP 测试（拨 223.5.5.5:53 并等响应），只返回能连通的。
+	for _, idx := range candidates {
+		if probeIfaceUDP(idx) {
+			log.Printf("[客户端] 网卡索引 %d 通过 UDP 连通性测试", idx)
+			return idx
+		}
+		log.Printf("[客户端] 网卡索引 %d UDP 连通性测试失败，跳过", idx)
+	}
+	if len(candidates) > 0 {
+		log.Printf("[客户端] 所有候选网卡均无法联通公网，跳过物理网卡绑定（使用默认路由）")
 	}
 	return -1
 }
@@ -2933,7 +3080,7 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 		return
 	}
 
-	stream, _, decision, err := echPool.openTCPStream(target)
+	stream, _, decision, err := openClientTCPStream(target)
 	if err != nil {
 		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		_ = c.Close()
@@ -2988,7 +3135,7 @@ func handleSOCKS5UDP(c net.Conn, cfgp *ProxyConfig) {
 	assoc := &UDPAssociation{
 		tcpConn:     c,
 		udpListener: ul,
-		pool:        echPool,
+		pool:        clientPool(),
 		channelID:   -1,
 	}
 
@@ -3296,7 +3443,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 		first = buf.Bytes()
 	}
 
-	stream, _, decision, err := echPool.openTCPStream(target)
+	stream, _, decision, err := openClientTCPStream(target)
 	if err != nil {
 		return
 	}

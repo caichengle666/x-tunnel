@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +27,7 @@ var (
 
 	reconnectMu     sync.Mutex
 	reconnectNeeded bool
+	poolRebuildMu   sync.Mutex
 
 	// tunnelConfigMu guards concurrent access to tunnelConfig.Servers
 	tunnelConfigMu sync.RWMutex
@@ -95,7 +97,14 @@ func canMergeWebWithTunnel() bool {
 	}
 	tunnelPort := u.Port()
 	if tunnelPort == "" {
-		return false
+		switch u.Scheme {
+		case "ws":
+			tunnelPort = "80"
+		case "wss":
+			tunnelPort = "443"
+		default:
+			return false
+		}
 	}
 	if webListen == "" {
 		webListen = ":" + tunnelPort
@@ -137,6 +146,49 @@ func registerWebGUIHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/servers/update", handleUpdateServer)
 	mux.HandleFunc("/api/servers/delete", handleDeleteServer)
 	mux.HandleFunc("/api/saveconfig", handleSaveConfig)
+}
+
+func isLocalRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
+func requireLocalAPI(w http.ResponseWriter, r *http.Request) bool {
+	if isLocalRequest(r) {
+		return true
+	}
+	http.Error(w, "仅允许本机访问管理接口", http.StatusForbidden)
+	return false
+}
+
+func rebuildClientPoolFromConfig() {
+	poolRebuildMu.Lock()
+	defer poolRebuildMu.Unlock()
+	tunnelConfigMu.RLock()
+	cfgCopy := tunnelConfig
+	tunnelConfigMu.RUnlock()
+	if len(cfgCopy.Servers) == 0 {
+		replaceClientPool(nil)
+		log.Printf("[热加载] 服务器列表为空，已停止连接池")
+		return
+	}
+	prepareClientECH(cfgCopy.Servers)
+	replaceClientPool(NewMultiPool(&cfgCopy))
+	log.Printf("[热加载] 连接池已按最新配置重建 (%d 台服务器)", len(cfgCopy.Servers))
+}
+
+func scheduleClientPoolRebuild() {
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		rebuildClientPoolFromConfig()
+	}()
 }
 
 func countActiveClients() int {
@@ -228,8 +280,9 @@ func statusJSON() map[string]interface{} {
 	}
 	result["tun_mode"] = tunMode
 
-	// Server mode (no echPool)
-	if echPool == nil {
+	pool := clientPool()
+	// Server mode (no pool)
+	if pool == nil {
 		result["mode"] = "server"
 		result["listen"] = listenAddr
 		result["tunnel"] = "服务端模式"
@@ -255,7 +308,7 @@ func statusJSON() map[string]interface{} {
 
 	channels := []chInfo{}
 	// 从多服务器中获取第一个可用服务器的通道信息
-	serverPools := echPool.ServerPools()
+	serverPools := pool.ServerPools()
 	if len(serverPools) > 0 {
 		sp := serverPools[0]
 		sp.mu.RLock()
@@ -284,10 +337,10 @@ func statusJSON() map[string]interface{} {
 		sp.mu.RUnlock()
 	}
 
-	result["servers"] = echPool.Servers()
+	result["servers"] = pool.Servers()
 	result["channels"] = channels
 	result["active_flows"] = liveTraffic.snapshot("client")
-	result["healthy"] = echPool.HasHealthyChannel()
+	result["healthy"] = pool.HasHealthyChannel()
 	geoIPCount := 0
 	if geoIPMatcher != nil {
 		geoIPCount = len(geoIPMatcher.cidrs)
@@ -304,7 +357,7 @@ func statusJSON() map[string]interface{} {
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if echPool == nil {
+	if clientPool() == nil {
 		w.Write([]byte(serverDashboardHTML))
 		return
 	}
@@ -331,7 +384,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func rejectServerMode(w http.ResponseWriter) bool {
-	if echPool != nil {
+	if clientPool() != nil {
 		return false
 	}
 	http.Error(w, "服务端模式不支持此管理操作", http.StatusForbidden)
@@ -352,7 +405,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Server mode: return minimal config (no client-only vars)
-	if echPool == nil {
+	if clientPool() == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"listen":            listenAddr,
 			"forward":           forwardAddr,
@@ -410,13 +463,19 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		geoSiteCount = len(geoSiteMatcher.domains)
 	}
 
+	rawToken := ""
+	rawServerTokens := map[string]string{}
+	if isLocalRequest(r) {
+		rawToken = token
+		rawServerTokens = serverTokensRaw
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"listen":            listenAddr,
 		"forward":           forwardAddr,
 		"token":             displayToken,
-		"token_raw":         token,
+		"token_raw":         rawToken,
 		"server_tokens":     serverTokens,
-		"server_tokens_raw": serverTokensRaw,
+		"server_tokens_raw": rawServerTokens,
 		"insecure":          insecure,
 		"ips":               ips,
 		"connections":       tunnelConfig.Connections,
@@ -779,7 +838,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <!-- Geo Routing Data -->
     <div id="geo-section" class="bg-gray-800 rounded-lg p-6 mb-8">
         <h2 class="text-xl font-semibold mb-4">GeoIP / GeoSite</h2>
-        <p class="text-gray-400 text-sm mb-4">Upload .dat files — auto hot-reloads routing rules.</p>
+        <p class="text-gray-400 text-sm mb-4">Local geoip.dat / geosite.dat are auto-loaded on startup. Missing files are downloaded automatically. Upload replaces files and hot-reloads rules.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="bg-gray-700 rounded p-4">
                 <p class="text-sm font-mono mb-2">geoip.dat <span id="geoip-status" class="text-xs text-gray-400">--</span></p>
@@ -847,6 +906,8 @@ function fetchStatus() {
         // Update listen address
         var listenEl = document.getElementById('cfg-listen');
         if (listenEl) listenEl.innerHTML = formatListen(data.listen || data.server || '');
+        // Local geoip/geosite files are auto-loaded on startup; refresh UI status
+        applyGeoStatus(data);
         
         // Render servers
         renderServers(data);
@@ -1067,7 +1128,7 @@ function restartClient() {
     }).catch(function() {});
 }
 
-function uploadGeoFile(t){var fi=document.getElementById(t+"-file"),m=document.getElementById(t+"-msg");if(!fi.files.length){m.textContent="no file";m.className="mt-1 text-xs text-yellow-400";m.classList.remove("hidden");return}var fd=new FormData();fd.append("file",fi.files[0]);fd.append("type",t);m.textContent="uploading...";m.className="mt-1 text-xs text-blue-400";m.classList.remove("hidden");fetch("/api/geo/upload",{method:"POST",body:fd}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK: "+resp.message:"FAIL: "+resp.message;m.className=resp.success?"mt-1 text-xs text-green-400":"mt-1 text-xs text-red-400"}).catch(function(e){m.textContent="err:"+e;m.className="mt-1 text-xs text-red-400"})}function reloadGeoData(){var m=document.getElementById("geo-reload-msg");m.textContent="reloading...";m.classList.remove("hidden");fetch("/api/geo/reload",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK":"FAIL";setTimeout(function(){m.classList.add("hidden")},4000)}).catch(function(){m.textContent="err"})}function updateGeoStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(d){if(d.geoip)document.getElementById("geoip-status").textContent=d.geoip;if(d.geosite)document.getElementById("geosite-status").textContent=d.geosite}).catch(function(){})}
+function uploadGeoFile(t){var fi=document.getElementById(t+"-file"),m=document.getElementById(t+"-msg");if(!fi.files.length){m.textContent="no file";m.className="mt-1 text-xs text-yellow-400";m.classList.remove("hidden");return}var fd=new FormData();fd.append("file",fi.files[0]);fd.append("type",t);m.textContent="uploading...";m.className="mt-1 text-xs text-blue-400";m.classList.remove("hidden");fetch("/api/geo/upload",{method:"POST",body:fd}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK: "+resp.message:"FAIL: "+resp.message;m.className=resp.success?"mt-1 text-xs text-green-400":"mt-1 text-xs text-red-400";if(resp.success)updateGeoStatus()}).catch(function(e){m.textContent="err:"+e;m.className="mt-1 text-xs text-red-400"})}function reloadGeoData(){var m=document.getElementById("geo-reload-msg");m.textContent="reloading...";m.classList.remove("hidden");fetch("/api/geo/reload",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){m.textContent=resp.success?"OK":"FAIL";if(resp.success)updateGeoStatus();setTimeout(function(){m.classList.add("hidden")},4000)}).catch(function(){m.textContent="err"})}function applyGeoStatus(d){var gi=document.getElementById("geoip-status"),gs=document.getElementById("geosite-status");if(!gi||!gs||!d)return;if(d.geoip){gi.textContent=d.geoip;gi.className=(String(d.geoip).indexOf("0 cidr")===0)?"text-xs text-yellow-400":"text-xs text-green-400"}if(d.geosite){gs.textContent=d.geosite;gs.className=(String(d.geosite).indexOf("0 domains")===0)?"text-xs text-yellow-400":"text-xs text-green-400"}}function updateGeoStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(d){applyGeoStatus(d)}).catch(function(){})}
 function onlineUpgrade(){var m=document.getElementById("geo-upgrade-msg");m.textContent="Downloading...";m.className="text-sm text-blue-400 self-center";m.classList.remove("hidden");fetch("/api/geo/upgrade",{method:"POST"}).then(function(r){return r.json()}).then(function(resp){if(resp.success){m.textContent="OK: "+msgLoaded();m.className="text-sm text-green-400 self-center";updateGeoStatus()}else{m.textContent="FAIL: "+resp.message;m.className="text-sm text-red-400 self-center"}}).catch(function(e){m.textContent="FAIL: "+e;m.className="text-sm text-red-400 self-center"})}function toggleTun(enable) {
     var el = document.getElementById('tun-toggle-status');
     el.textContent = 'setting...';
@@ -1094,8 +1155,8 @@ function onlineUpgrade(){var m=document.getElementById("geo-upgrade-msg");m.text
     });
 }
 function msgLoaded(){return "geo data ready"}
-fetchStatus(); fetchConfig(); fetchLogs();
-setInterval(updateGeoStatus,30000);
+fetchStatus(); fetchConfig(); fetchLogs(); updateGeoStatus();
+setInterval(updateGeoStatus,5000);
 setInterval(fetchStatus, 3000);
 
 // ======================== 全局配置编辑 ========================
@@ -1229,11 +1290,14 @@ type updateRequest struct {
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if echPool == nil {
+	if clientPool() == nil {
 		http.Error(w, "服务端模式不支持此操作", http.StatusForbidden)
 		return
 	}
@@ -1259,7 +1323,9 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		token = *req.Token
 		tunnelConfig.Token = *req.Token
 		changes = append(changes, "token")
-		reconnectNeeded = true
+		// 使用全局 token 的服务器需要重建连接池才能立即生效
+		reconnectNeeded = false
+		scheduleClientPoolRebuild()
 	}
 	if req.Forward != "" && req.Forward != forwardAddr {
 		log.Printf("[热加载] forward: %s -> %s", forwardAddr, req.Forward)
@@ -1292,8 +1358,8 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Strategy != "" && req.Strategy != tunnelConfig.Strategy {
 		log.Printf("[热加载] strategy: %s -> %s", tunnelConfig.Strategy, req.Strategy)
 		tunnelConfig.Strategy = req.Strategy
-		if echPool != nil {
-			echPool.strategy = req.Strategy
+		if p := clientPool(); p != nil {
+			p.strategy = req.Strategy
 		}
 		changes = append(changes, "strategy")
 	}
@@ -1334,6 +1400,8 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	msg := "配置已更新"
 	if reconnectNeeded {
 		msg += "，需要点击重启按钮生效"
+	} else if len(changes) > 0 {
+		msg += "，部分变更已自动生效"
 	}
 
 	// 保存配置到文件
@@ -1354,6 +1422,9 @@ func copyTunConfigAndStart() {
 }
 
 func handleRestartClient(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
 		return
@@ -1375,6 +1446,9 @@ func handleRestartClient(w http.ResponseWriter, r *http.Request) {
 // ======================== Multi-Server Management ========================
 
 func handleAddServer(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1407,18 +1481,14 @@ func handleAddServer(w http.ResponseWriter, r *http.Request) {
 	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if echPool != nil {
-			echPool.Stop()
-		}
-		echPool = NewMultiPool(&tunnelConfig)
-		echPool.Start()
-	}()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": false, "message": "服务器已添加，连接池重建中"})
+	scheduleClientPoolRebuild()
 }
 
 func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1450,18 +1520,14 @@ func handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if echPool != nil {
-			echPool.Stop()
-		}
-		echPool = NewMultiPool(&tunnelConfig)
-		echPool.Start()
-	}()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": false, "message": "服务器已更新，连接池重建中"})
+	scheduleClientPoolRebuild()
 }
 
 func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1486,20 +1552,14 @@ func handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 	tunnelConfigMu.Unlock()
 	_ = saveConfigToFile()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": true})
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if echPool != nil {
-			echPool.Stop()
-		}
-		if len(tunnelConfig.Servers) > 0 {
-			echPool = NewMultiPool(&tunnelConfig)
-			echPool.Start()
-		}
-	}()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "restart": false, "message": "服务器已删除，连接池重建中"})
+	scheduleClientPoolRebuild()
 }
 
 func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1538,6 +1598,9 @@ func saveConfigToFile() error {
 // ======================== Geo Data Upload & Reload ========================
 
 func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1590,6 +1653,9 @@ func handleGeoUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGeoReload(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1623,6 +1689,9 @@ var geoUpgradeMirrors = map[string][]string{
 }
 
 func handleGeoUpgrade(w http.ResponseWriter, r *http.Request) {
+	if !requireLocalAPI(w, r) {
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(w, "POST only", 405)
 		return
@@ -1704,4 +1773,45 @@ func downloadGeoFile(url, filename string) error {
 	}
 	f.Close()
 	return os.Rename(tmpName, filename)
+}
+
+// ensureMissingGeoFiles 在本地 geo 数据缺失时自动下载。
+// 已有有效文件则跳过，不覆盖用户现有数据。
+func ensureMissingGeoFiles() {
+	type item struct {
+		kind string
+		path string
+	}
+	list := []item{
+		{kind: "geoip", path: geoipFile},
+		{kind: "geosite", path: geositeFile},
+	}
+	for _, it := range list {
+		path := strings.TrimSpace(it.path)
+		if path == "" {
+			continue
+		}
+		if st, err := os.Stat(path); err == nil && st.Size() >= 1000 {
+			continue
+		}
+		mirrors := geoUpgradeMirrors[it.kind]
+		if len(mirrors) == 0 {
+			log.Printf("[Geo] 无可用镜像，跳过自动下载: %s", path)
+			continue
+		}
+		log.Printf("[Geo] 本地缺少 %s，开始自动下载...", path)
+		ok := false
+		for _, u := range mirrors {
+			if err := downloadGeoFile(u, path); err != nil {
+				log.Printf("[Geo] 自动下载失败 %s: %v", u, err)
+				continue
+			}
+			log.Printf("[Geo] 自动下载完成: %s", path)
+			ok = true
+			break
+		}
+		if !ok {
+			log.Printf("[Geo] 自动下载失败，请手动上传或点击 Online Upgrade: %s", path)
+		}
+	}
 }

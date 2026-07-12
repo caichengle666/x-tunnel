@@ -147,7 +147,7 @@ func installControlPlaneHostRoutes() {
 	added := 0
 	seen := map[string]bool{}
 	for _, host := range hosts {
-		ips, err := net.LookupIP(host)
+		ips, err := resolveControlPlaneIPs(host)
 		if err != nil {
 			log.Printf("[TUN] control-plane resolve failed %s: %v", host, err)
 			continue
@@ -324,4 +324,31 @@ func bindSocketToPhysNIC(network string, c syscall.RawConn) error {
 			log.Printf("[TUN] bind physical NIC failed: %v", sockErr)
 		}
 	})
+}
+
+// probeIfaceUDP 测试指定网卡能否访问公网。
+// 先测 UDP DNS（223.5.5.5:53），失败再测 TCP 443，避免只拦 UDP 53 的环境误判。
+func probeIfaceUDP(ifaceIdx int) bool {
+	iface, err := net.InterfaceByIndex(ifaceIdx)
+	if err != nil {
+		return false
+	}
+	// 1) UDP DNS
+	if conn, err := directDialUDP("223.5.5.5", 53, iface); err == nil {
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		query := buildDNSQuery("cloudflare.com", 1)
+		_, werr := conn.Write(query)
+		buf := make([]byte, 512)
+		n, rerr := conn.Read(buf)
+		conn.Close()
+		if werr == nil && rerr == nil && n >= 12 {
+			return true
+		}
+	}
+	// 2) TCP 443 兜底（部分云电脑只放行 TCP）
+	if conn, err := directDialTCP("1.1.1.1:443", iface); err == nil {
+		conn.Close()
+		return true
+	}
+	return false
 }
