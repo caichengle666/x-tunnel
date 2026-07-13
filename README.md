@@ -132,6 +132,8 @@ Windows binary:
 go build -o x-tunnel-new.exe .
 ```
 
+GitHub Actions release artifacts are packaged as archives. The Windows amd64 package automatically downloads official Wintun `0.14.1` during CI and includes `wintun.dll` next to `x-tunnel.exe` for TUN mode.
+
 ## Important Flags
 
 | Flag | Description |
@@ -167,4 +169,4 @@ README-docker.md    Docker deployment guide
 - Docker server deployment uses `ghcr.io/caichengle666/x-tunnel:latest`.
 - Server mode exposes `/tunnel` and `/` on the same port.
 - Server Web page is read-only; client management APIs are disabled in server mode.
-- Windows TUN mode requires administrator privileges and `wintun.dll` next to the executable.
+- Windows TUN mode requires administrator privileges and `wintun.dll` next to the executable. The GitHub Windows amd64 release package includes it automatically.

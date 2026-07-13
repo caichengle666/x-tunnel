@@ -42,14 +42,33 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
+          ARTIFACT="x-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}"
+          DIST="dist/$ARTIFACT"
           EXT=$([ "${{ matrix.goos }}" = "windows" ] && echo ".exe" || echo "")
-          NAME="x-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}$EXT"
-          go build -ldflags "-s -w" -o "$NAME" .
+          mkdir -p "$DIST"
+          go build -ldflags "-s -w" -o "$DIST/x-tunnel$EXT" .
+          if [ "${{ matrix.goos }}" = "windows" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
+            sudo apt-get update
+            sudo apt-get install -y zip unzip
+            curl -fsSL -o /tmp/wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+            unzip -q /tmp/wintun.zip -d /tmp/wintun
+            WINTUN_DLL=$(find /tmp/wintun -path '*/amd64/wintun.dll' -print -quit)
+            if [ -z "$WINTUN_DLL" ]; then
+              echo "wintun.dll not found in Wintun package" >&2
+              exit 1
+            fi
+            cp "$WINTUN_DLL" "$DIST/wintun.dll"
+          fi
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            (cd dist && zip -qr "$ARTIFACT.zip" "$ARTIFACT")
+          else
+            tar -C dist -czf "dist/$ARTIFACT.tar.gz" "$ARTIFACT"
+          fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: x-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: x-tunnel-*
+          path: dist/x-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}.*
 
   release:
     needs: build
@@ -99,4 +118,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
