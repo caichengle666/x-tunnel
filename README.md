@@ -123,13 +123,13 @@ curl.exe --socks5 127.0.0.1:1080 http://ipinfo.io/ip
 ## Build
 
 ```bash
-go build -o x-tunnel .
+go build -o x-tunnel ./cmd/x-tunnel
 ```
 
 Windows binary:
 
 ```powershell
-go build -o x-tunnel-new.exe .
+go build -o x-tunnel-new.exe ./cmd/x-tunnel
 ```
 
 GitHub Actions release artifacts are packaged as archives. The Windows amd64 package automatically downloads official Wintun `0.14.1` during CI and includes `wintun.dll` next to `x-tunnel.exe` for TUN mode.
@@ -152,12 +152,7 @@ GitHub Actions release artifacts are packaged as archives. The Windows amd64 pac
 ## Repository Layout
 
 ```text
-x-tunnel.go          Main program
-config.go           JSON config handling
-multipool.go        Multi-server pool
-web_gui.go          Web panel and API
-spawnproc_*.go      Process restart helpers
-tun_*.go            Windows TUN mode
+cmd/x-tunnel/       Main Go package, client/server/Web/TUN code
 deploy-server.sh    One-click Docker server deploy
 Dockerfile          Server image build
 docker-compose.yml  Server compose example

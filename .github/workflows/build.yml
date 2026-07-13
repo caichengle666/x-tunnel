@@ -46,7 +46,7 @@ jobs:
           DIST="dist/$ARTIFACT"
           EXT=$([ "${{ matrix.goos }}" = "windows" ] && echo ".exe" || echo "")
           mkdir -p "$DIST"
-          go build -ldflags "-s -w" -o "$DIST/x-tunnel$EXT" .
+          go build -ldflags "-s -w" -o "$DIST/x-tunnel$EXT" ./cmd/x-tunnel
           if [ "${{ matrix.goos }}" = "windows" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
             sudo apt-get update
             sudo apt-get install -y zip unzip

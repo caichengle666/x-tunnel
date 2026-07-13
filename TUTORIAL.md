@@ -21,7 +21,7 @@
 
 ```powershell
 cd x-tunnel-src
-go build -o x-tunnel.exe .
+go build -o x-tunnel.exe ./cmd/x-tunnel
 ```
 
 编译后得到单个 `x-tunnel.exe`（约 15MB），无外部依赖，复制到任意目录即可运行。

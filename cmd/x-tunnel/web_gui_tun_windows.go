@@ -50,7 +50,13 @@ func handleTunToggle(w http.ResponseWriter, r *http.Request) {
 		"success":  true,
 		"tun_mode": req.Enable,
 		"active":   false,
-		"message":  func() string { if req.Enable { return "TUN 模式已启用，正在重启服务..." } else { return "TUN 模式已关闭，正在重启服务..." } }(),
+		"message": func() string {
+			if req.Enable {
+				return "TUN 模式已启用，正在重启服务..."
+			} else {
+				return "TUN 模式已关闭，正在重启服务..."
+			}
+		}(),
 	})
 
 	// 再启动新进程（会停旧监听器、起新进程、旧进程退出）
