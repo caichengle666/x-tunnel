@@ -345,6 +345,11 @@ func (h *tunConnHandler) handleTCP(r *tcp.ForwarderRequest) {
 			log.Printf("[TUN][TCP][proxy] %s -> %s (%s, open failed: %v)", conn.RemoteAddr(), proxyTarget, routeReason, perr)
 			return
 		}
+		if err := readTunnelStatus(stream); err != nil {
+			log.Printf("[TUN][TCP][proxy] %s -> %s (%s, rejected: %v)", conn.RemoteAddr(), proxyTarget, routeReason, err)
+			_ = stream.Close()
+			return
+		}
 		log.Printf("[TUN][TCP][proxy] %s -> %s (%s, ch=%d)", conn.RemoteAddr(), proxyTarget, routeReason, channelID)
 		acct := clientStreamAccounting(stream, "TUN", proxyTarget, conn.RemoteAddr().String(), channelID)
 		if initial != nil {

@@ -334,6 +334,7 @@ func main() {
 		if cfg.Listen != "" && listenAddr == "" {
 			listenAddr = cfg.Listen
 		}
+		ensureElevatedForTun()
 		log.Printf("[客户端] 已加载配置文件: %s (%d 台服务器, 策略: %s, 监听: %s)",
 			configFile, len(cfg.Servers), cfg.Strategy, listenAddr)
 		prepareClientECH(cfg.Servers)
@@ -350,6 +351,7 @@ func main() {
 			Servers:  configToServers(simpleAddrs),
 		}
 		tunnelConfig = *simpleCfg
+		ensureElevatedForTun()
 		prepareClientECH(simpleCfg.Servers)
 		replaceClientPool(NewMultiPool(simpleCfg))
 	}
@@ -1107,7 +1109,7 @@ func resolveControlPlaneIPs(host string) ([]net.IP, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ips, err := controlPlaneResolver(3 * time.Second).LookupIPAddr(ctx, host)
+	ips, err := controlPlaneResolver(3*time.Second).LookupIPAddr(ctx, host)
 	if err == nil && len(ips) > 0 {
 		out := make([]net.IP, 0, len(ips))
 		for _, a := range ips {
@@ -1166,7 +1168,6 @@ func openClientUDPStream(target string) (*smux.Stream, int, int, error) {
 	}
 	return p.openUDPStream(target)
 }
-
 
 // controlPlaneResolver 强制使用公共 DNS，避免云电脑/TUN 场景下系统 DNS 超时。
 func controlPlaneResolver(timeout time.Duration) *net.Resolver {

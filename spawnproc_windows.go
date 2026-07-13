@@ -11,12 +11,46 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 // spawnNewProcess starts a new instance and exits the current one.
 // desiredTun=true requests UAC elevation for TUN mode.
+func ensureElevatedForTun() {
+	if !tunMode || isProcessElevated() {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("[TUN] 获取可执行文件路径失败，无法请求管理员权限: %v", err)
+	}
+	args := buildSpawnArgs(exe, true)
+	argStr := windowsCommandLine(args)
+	log.Printf("[TUN] 当前进程不是管理员，正在请求 UAC 提权重启...")
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(exe)
+	params, _ := windows.UTF16PtrFromString(argStr)
+	dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
+	if err := windows.ShellExecute(0, verb, file, params, dir, 1); err != nil {
+		log.Fatalf("[TUN] 请求管理员权限失败: %v", err)
+	}
+	os.Exit(0)
+}
+
+func isProcessElevated() bool {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		return false
+	}
+	defer token.Close()
+	var elevation uint32
+	var outLen uint32
+	err := windows.GetTokenInformation(token, windows.TokenElevation, (*byte)(unsafe.Pointer(&elevation)), uint32(unsafe.Sizeof(elevation)), &outLen)
+	return err == nil && elevation != 0
+}
+
 func spawnNewProcess(desiredTun bool) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -34,7 +68,7 @@ func spawnNewProcess(desiredTun bool) {
 		verb, _ := windows.UTF16PtrFromString("runas")
 		file, _ := windows.UTF16PtrFromString(exe)
 		params, _ := windows.UTF16PtrFromString(argStr)
-		dir, _ := windows.UTF16PtrFromString("")
+		dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
 		var showCmd int32 = 1
 		err := windows.ShellExecute(0, verb, file, params, dir, showCmd)
 		if err != nil {
@@ -59,7 +93,7 @@ func spawnNewProcess(desiredTun bool) {
 	verb, _ := windows.UTF16PtrFromString("open")
 	file, _ := windows.UTF16PtrFromString(exe)
 	params, _ := windows.UTF16PtrFromString(argStr)
-	dir, _ := windows.UTF16PtrFromString("")
+	dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
 	var showCmd int32 = 1
 	err = windows.ShellExecute(0, verb, file, params, dir, showCmd)
 	if err != nil {

@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+func ensureElevatedForTun() {}
+
 func spawnNewProcess(desiredTun bool) {
 	exe, err := os.Executable()
 	if err != nil {
